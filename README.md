@@ -52,12 +52,17 @@ The toggle runs immediately, even while Claude is mid-turn, and is remembered ac
 
 You can't read decayed code, so neocode steps aside whenever you're interacting with the transcript, and comes back by itself once you stop. The wait is the **Resume after** option, 5 seconds by default.
 
-- **Scrolling.** Every scroll, by mouse wheel or keyboard, clears the rain from the whole screen at once. Once you've gone the full delay without scrolling, it returns. If you're still scrolled back through the conversation, it uses a gentler pattern: the lower half of the window stays fully readable and only the upper half turns to rain. Back at the live bottom, it decays as usual.
-- **Selecting text.** Selecting with the mouse clears the rain, so what you select is the real text. Once the selection has stopped changing for the full delay, the rain returns everywhere except the transcript row you selected in. That row stays clean for as long as the selection exists, so copying it later, with Ctrl+C, Ctrl+Shift+C or Cmd+C, also gets the real text. If your selection spans several rows, the rain stays off until your next prompt or command, because Claude Code doesn't tell a mod which rows a multi-row selection covers.
+- **Scrolling.** Every scroll, by mouse wheel or keyboard (PgUp, PgDn, Ctrl+Home, Ctrl+End), clears the rain from the whole screen at once. Once you've gone the full delay without scrolling, it returns in the same pattern wherever you are, including back at the bottom: the upper half of the window turns to rain and the lower half stays fully readable. The usual decay comes back with your next prompt.
+- **Selecting text.** Selecting with the mouse clears the rain, so what you select is the real text. Once the selection has stopped changing for the full delay, the rain returns everywhere except the transcript row you selected in. That row stays clean while the selection might still be highlighted, so copying it later with Ctrl+C, Ctrl+Shift+C or Cmd+C also gets the real text.
+  - Typing anything in the prompt box clears the highlight, and the rain returns over that row too.
+  - Claude Code doesn't tell mods when a click elsewhere clears the highlight. After a click, the row stays clean until you type, send a prompt or run a command.
+  - A selection spanning several rows doesn't say which rows it covers, so the rain stays off until you type, send a prompt or run a command.
 
 ### How scrolling is detected
 
-Mods get no scroll event for the transcript. Instead, Claude Code reports which lines of each row are on screen whenever the rows at the window's edges move. New output at the live bottom only ever pushes rows off the *top* of the window, so neocode treats a row cut off at the *bottom* of the window, or one that just was, as a scroll.
+Mods get no scroll event for the transcript. Instead, Claude Code reports which lines of each row are on screen whenever they change. New output at the live bottom only ever pushes rows up and off the top. So neocode treats any other movement as a scroll: a row cut off at the bottom of the window, a row coming into view from off screen, or a row's top line coming back. Moves that happen as output arrives are ignored.
+
+A row that jumps off screen in one move (Ctrl+Home, Ctrl+End, PgUp) isn't always reported again. So neocode never trusts a single row's report. It works out which rows are on screen from neighbouring rows that agree with each other, in the order Claude Code draws them.
 
 ## Configuration
 
@@ -100,8 +105,9 @@ Mods run unsandboxed with your permissions, so here is everything neocode does:
   - `command.run` for `/neocode`.
   - `session.start` and `session.end`, to set up the timer and command, and to reset after `/clear`.
   - `classic.MessageDisplay`, to read the streamed reply's lines so it knows how tall the reply is. It passes the event on unchanged, and that event is display-only in Claude Code anyway.
+  - `prompt.edit`, to notice that you typed in the prompt box, which clears a selection. It doesn't read what you typed and passes the event on unchanged.
 
-  It hooks nothing that changes conversation data: no `session.append`, `tool.call` or `prompt.*`.
+  It hooks nothing that changes conversation data: no `session.append`, `tool.call` or `prompt.submit`.
 - **Never changes what the model sees, what the transcript stores, or what gets written to files.** It doesn't rewrite any props. It draws on top of the engine's own drawing.
 - **Clipboard.** Claude Code copies a mouse selection from what's on screen, both when you release the mouse and when you press a copy key later. So neocode removes the rain while you select, and never puts it back over the row you selected in while that selection exists. If a selection is made faster than one animation frame (a double-click on a word, for example), the copy on release can catch glyphs. When that happens, neocode re-copies the same selection once the rain is gone, so the clipboard ends up holding the real text you selected.
 - **Storage:** two flags in its own plugin store: your `/neocode` choice, and whether the fullscreen hint has been shown.
@@ -112,10 +118,11 @@ Run `claude plugin validate --strict .claude-plugin/plugin.json` in a clone to s
 
 ## Known limitations
 
-- **Fullscreen renderer only.** The default renderer prints finished rows into terminal scrollback, where they can't be redrawn.
+- **Fullscreen renderer only.** neocode needs `/tui fullscreen`. The default renderer prints finished rows into terminal scrollback, where they can't be redrawn.
+- **The terminal's own scrollbar and search don't see the conversation.** Under the fullscreen renderer the conversation lives on the terminal's alternate screen. The terminal's scrollbar, Cmd+F and native scrollback don't reflect it, and dragging the native scrollbar can show blank space or lines from before Claude Code launched. This happens with or without neocode. Scroll with the mouse wheel, or use Ctrl+O for transcript mode.
 - **Text positions are estimates.** A mod is told how tall each row is, but not what's in it. neocode estimates where text sits from the row's content (markdown, tool input or output), so in the transition band a bite occasionally lands on whitespace. Higher up, everything is rain anyway.
 - **A reply still streaming isn't fully reachable.** Claude Code paints streaming text over anything a mod lays on it, and it stops drawing the row above once that row scrolls off. So a reply's own text decays only once it completes. Until then you get rain around its lines, but only until the reply fills the screen; after that it stays plain until it's done. See [While Claude is still writing](#while-claude-is-still-writing).
-- **Multi-row selections pause the rain until your next prompt or command,** because no API says which rows they cover.
+- **A selection keeps its row clean until you type, send a prompt or run a command,** because Claude Code tells mods nothing when a click clears it. A multi-row selection keeps all the rain paused that long, because no API says which rows it covers.
 - **Rows the engine doesn't report**, such as the welcome banner and the live spinner, are left as they are.
 - **Glyph width.** Half-width katakana are one cell wide in standard terminal fonts. A font that draws them wide will misalign the rain; use `letters`.
 - **Light themes.** The palette is tuned for dark backgrounds.

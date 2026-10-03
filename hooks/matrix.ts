@@ -63,7 +63,7 @@ const CURVES: Record<Curve, readonly [number, number]> = {
   gentle: [0.45, 1.0],
   balanced: [0.25, 0.8],
   deep: [0.1, 0.6],
-  scrolled: [0.5, 1.0],
+  scrolled: [0.5, 0.75],
 }
 
 /**

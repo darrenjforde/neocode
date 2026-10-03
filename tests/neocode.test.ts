@@ -241,3 +241,90 @@ describe('interaction', () => {
   })
 })
 
+describe('scrolled back (0.2.1 fixes)', () => {
+  const reply = (requestId: string, onScreen: { first: number; last: number; of: number } | null) =>
+    ({ plugin: 'neocode', surface: 'terminal', component: 'AssistantMessage', requestId, props: { ...REPLY, onScreen }, viewport: VIEWPORT }) as const
+  const coveredRows = (tree: unknown) =>
+    [...JSON.stringify(tree).matchAll(/"top":(\d+)[^}]*\}[^R]*Raster[^}]*?"rows":(\d+)/g)].flatMap(m =>
+      Array.from({ length: Number(m[2]) }, (_, i) => Number(m[1]) + i),
+    )
+  const rasterRows = (tree: unknown) => [...JSON.stringify(tree).matchAll(/"top":(\d+)/g)].map(m => Number(m[1]))
+
+  test('a row left over from another scroll position does not throw the window off', QUICK, async ($, on) => {
+    on('ui.render', () => ENGINE)
+    // Seen while scrolled to the top: cut off at the bottom of the window then.
+    // The window has since jumped away and the engine never reported it again.
+    await $.ui.mount(reply('old', { first: 0, last: 9, of: 41 }))
+    // What is really on screen: the last 24 lines of a long reply, at the live bottom.
+    const now = await $.ui.mount(reply('now', { first: 72, last: 95, of: 96 }))
+    await now.redraw()
+    const rows = rasterRows(await now.drawn())
+    expect(rows.length).toBeGreaterThan(0) // rain over the top of the window
+    expect(Math.min(...rows)).toBe(72) // starting at the window's top line
+  })
+
+  test('a row first seen after the row below it is still placed above it', QUICK, async ($, on) => {
+    on('ui.render', () => ENGINE)
+    const code = { text: Array.from({ length: 11 }, (_, i) => `    line ${i} of the reply`).join('\n'), isFirstOfReply: true }
+    const reply = (requestId: string, onScreen: { first: number; last: number; of: number }) =>
+      ({ plugin: 'neocode', surface: 'terminal', component: 'AssistantMessage', requestId, props: { ...code, onScreen }, viewport: VIEWPORT }) as const
+    // A resumed conversation: the bottom reply is drawn first, the one above
+    // it only appears later, when a pass over the screen draws both in order.
+    const below = await $.ui.mount(reply('below', { first: 0, last: 11, of: 12 }))
+    await wait(50)
+    const above = await $.ui.mount(reply('above', { first: 0, last: 11, of: 12 }))
+    // A pass over the screen: both rows drawn at once, top to bottom.
+    await Promise.all([above.redraw(), below.redraw()])
+    await Promise.all([above.redraw(), below.redraw()])
+    const covered = coveredRows(await above.drawn())
+    expect(covered).toContain(11) // its last line sits twelve lines up, in the rain
+  })
+
+  test('a jump that cuts no row off at the bottom still counts as a scroll', QUICK, async ($, on) => {
+    on('ui.render', () => ENGINE)
+    const clock = mockSession(on)
+    on('ui.selection', () => ({ value: undefined }))
+    on('ui.blit', () => ({ value: {} }))
+    await startSession($)
+    const row = await $.ui.mount(reply('row', null)) // off screen
+    await wait(500)
+    // Ctrl+End: the window lands on a row that was off screen, every line of it in view.
+    await row.redraw({ ...REPLY, onScreen: { first: 0, last: 23, of: 24 } })
+    await wait(400)
+    await clock.advance(100)
+    await row.redraw()
+    expect(hasRaster(await row.drawn())).toBe(false) // paused: that was a scroll
+    await wait(1100)
+    await clock.advance(100)
+    await row.redraw()
+    expect(hasRaster(await row.drawn())).toBe(true) // and it comes back
+  })
+})
+
+describe('selection (0.2.1 fixes)', () => {
+  test('a selection that scrolls out of the drawn rows keeps its row, rather than pausing all rain', QUICK, async ($, on) => {
+    on('ui.render', () => ENGINE)
+    const clock = mockSession(on)
+    let selected: { text: string; requestId?: string } = { text: 'for cell in grid:', requestId: 'chosen' }
+    on('ui.selection', () => ({ value: selected }))
+    on('ui.copy', () => ({ value: { isCopied: true } }))
+    on('ui.blit', () => ({ value: {} }))
+    await startSession($)
+    const other = await $.ui.mount({
+      plugin: 'neocode', surface: 'terminal', component: 'AssistantMessage', requestId: 'other',
+      props: { ...REPLY, onScreen: ON_SCREEN }, viewport: VIEWPORT,
+    })
+    const frames = async (ms: number) => {
+      for (let t = 0; t < ms; t += 100) {
+        await wait(100)
+        await clock.advance(100)
+      }
+    }
+    await frames(1300)
+    selected = { text: 'for cell in grid:' } // same selection; its row is no longer drawn
+    await frames(300)
+    await other.redraw()
+    expect(hasRaster(await other.drawn())).toBe(true)
+  })
+})
+

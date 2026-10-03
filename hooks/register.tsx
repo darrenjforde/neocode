@@ -6,9 +6,9 @@
 //      `Raster` cell grids over the parts that should look decayed, using
 //      `position: "absolute"` so nothing underneath moves.
 //   2. The engine tells each row which of its lines are on screen
-//      (`onScreen`) and how tall it is. Stacking those heights gives every
-//      line's distance above the bottom of the window, which sets how
-//      decayed it is.
+//      (`onScreen`) and how tall it is. Stacking the heights of the rows on
+//      screen, in the order the engine draws them, gives every line's
+//      distance above the bottom of the window, which sets how decayed it is.
 //   3. A timer repaints the mounted rasters with `$.ui.blit` (no re-render),
 //      so glyphs churn and trails climb while the text underneath is static.
 //
@@ -25,9 +25,11 @@
 // that row once it scrolls off, so the reply's own text decays when it completes.
 //
 // What it touches, all of it: it hooks no event that changes conversation
-// data (`session.append`, `tool.call`, `prompt.*`), rewrites no props, opens
-// no network connection, runs no process and writes no file. It reads the
-// streamed reply's display lines to size the rain over them. Its own
+// data (`session.append`, `tool.call`, `prompt.submit` and the rest), rewrites
+// no props, opens no network connection, runs no process and writes no file.
+// It reads the streamed reply's display lines to size the rain over them, and
+// notes that the prompt box was edited (`prompt.edit`, passed on untouched,
+// its text unread) because typing clears a selection. Its own
 // `$.store` keeps two flags (the /neocode toggle, and whether the fullscreen
 // hint was shown); it reads one setting (`prefersReducedMotion`). The overlay
 // exists only in the terminal's drawing; the one thing it does outside it is
@@ -78,16 +80,19 @@ const CHROME_ROWS = 6
 // moment while the screen catches up; its reports in that time are not scrolls.
 const SETTLE_MS = 400
 
+// Draws the engine makes this close together belong to one pass over the
+// transcript, which it makes top to bottom.
+const PASS_MS = 5
+
 // --- module state (rebuilt on reload; the next render fills it again) --------
 
 type OnScreen = { first: number; last: number; of: number }
 
 /**
- * What the engine last reported for a transcript row: `seq` is its order, top
- * to bottom; `shown` its last `onScreen`; `changedAt` when it appeared or last
- * changed height.
+ * What the engine last reported for a transcript row: `shown` its last
+ * `onScreen`; `changedAt` when it appeared or last changed height.
  */
-type Entry = { seq: number; of: number; shown: OnScreen | null; changedAt: number }
+type Entry = { of: number; shown: OnScreen | null; changedAt: number }
 
 /** One raster laid over a row: `rows` x `width` cells at (`row`, `col`) of the row's drawing. */
 type Overlay = {
@@ -114,10 +119,12 @@ type Mount = {
 }
 
 const entries = new Map<string, Entry>()
+const order: Entry[] = [] // the rows top to bottom, as learned in `place`
 const mounts = new Map<string, Mount>()
-let nextSeq = 0
-let bottomKey = ''
 let lastScrollAt = 0
+let maybeScrollAt = 0 // a move that may be a scroll, confirmed in `frame` unless output explains it
+let lastGrowthAt = 0 // when output last arrived: a row appeared or grew, or the stream got longer
+let hasScrolled = false // since the last prompt: rain then keeps the lower half of the window readable
 let layoutDirtyAt = 0
 let settings = { reach: 'balanced' as Reach, glyphs: 'katakana' as GlyphSet, resumeMs: 5000 }
 
@@ -131,44 +138,119 @@ const sameRange = (a: OnScreen | null, b: OnScreen | null) =>
 /** True while a scroll happened within the resume delay. */
 const isScrolling = () => Date.now() - lastScrollAt < settings.resumeMs
 
+/** A scroll was seen: clear the rain now, and keep the lower half readable when it returns. */
+function scrolled(at: number) {
+  lastScrollAt = at
+  hasScrolled = true
+}
+
 /**
  * Records a row's report and tells scrolling apart from content arriving.
  *
- * Mods get no scroll event for the transcript, but the rows at the window's
- * edges report each time they move. New output at the live bottom only ever
- * pushes rows off the top. A row cut off at the bottom of the window, or one
- * that just was, means the window itself moved: the person is scrolling.
+ * Mods get no scroll event for the transcript, but a row reports again each
+ * time its lines on screen change. New output at the live bottom only pushes
+ * rows up and off the top of the window. Anything else is the window moving:
+ *
+ * - A row cut off at the bottom of the window, or one that just was, can only
+ *   be a scroll, so it clears the rain at once.
+ * - Any other move (a row coming into view from off screen, a row's top line
+ *   coming back) is a scroll too, unless output arrived around the same time:
+ *   the spinner giving way to a streaming reply shifts rows the same way. Those
+ *   wait for `frame` to confirm them, a few hundred milliseconds.
+ *
+ * Jumps (Ctrl+Home, Ctrl+End, PgUp) can leave a row's report stale: a row that
+ * leaves the screen in one jump is not always reported again. Nothing here
+ * trusts a row's report on its own; see `visibleRun`.
  */
 function measure(key: string, shown: OnScreen | null): Entry {
   const now = Date.now()
   let entry = entries.get(key)
   if (!entry) {
-    entry = { seq: nextSeq++, of: shown?.of ?? 0, shown, changedAt: now }
+    entry = { of: shown?.of ?? 0, shown, changedAt: now }
     entries.set(key, entry)
-    bottomKey = key
-    layoutDirtyAt ||= now
-    // The finished reply has its own row now; stop raining on its stream.
-    if (key.startsWith('AssistantMessage:')) stream = undefined
+    place(entry, now)
+    layoutDirtyAt ||= now // a full pass soon, to settle where it goes
+    if (entry === newest() && !isScrolling()) {
+      lastGrowthAt = now
+      // A new prompt means the person is back at the live bottom, watching.
+      if (key.startsWith('UserMessage:')) hasScrolled = false
+      // The finished reply has its own row now; stop raining on its stream.
+      if (key.startsWith('AssistantMessage:')) stream = undefined
+    }
     return entry
   }
+  place(entry, now)
   const prev = entry.shown
-  if (shown && shown.of !== entry.of) {
-    entry.of = shown.of
+  // A row first reported off screen has no height yet (0); learning it is not growth.
+  const hasGrown = !!shown && entry.of > 0 && shown.of !== entry.of
+  if (shown) entry.of = shown.of
+  if (hasGrown) {
     entry.changedAt = now
-    layoutDirtyAt ||= now
+    lastGrowthAt = now
   } else if (!sameRange(prev, shown) && now - entry.changedAt > SETTLE_MS) {
-    if (isBottomClipped(prev) || isBottomClipped(shown)) lastScrollAt = now
+    const isPushedUp =
+      !!prev && (shown ? shown.last === prev.last && shown.first > prev.first : prev.last === prev.of - 1)
+    if (isBottomClipped(prev) || isBottomClipped(shown)) scrolled(now)
+    else if (!isPushedUp) maybeScrollAt ||= now
   }
-  // Scrolled back, positions are counted from the window's top, so any move redraws.
-  if (!sameRange(prev, shown) && isAway()) layoutDirtyAt ||= now
+  // Any row moving redraws the rest, so they measure against fresh reports.
+  if (!sameRange(prev, shown)) layoutDirtyAt ||= now
   entry.shown = shown
   return entry
 }
 
-/** True while the window is scrolled away from the live bottom: some row is cut off below it. */
-function isAway(): boolean {
-  for (const { shown } of entries.values()) if (isBottomClipped(shown)) return true
-  return false
+const newest = () => order[order.length - 1]
+
+/**
+ * Learns the transcript's order. The engine draws rows in passes, top to
+ * bottom, so a row drawn right after another (within PASS_MS) sits directly
+ * below it: a new row goes there, and a known row found elsewhere moves there.
+ *
+ * Counting rows as they first appear would not do: in a resumed conversation,
+ * or after the mod reloads, older rows first appear as the person scrolls up
+ * to them. Any full pass (every layout change makes one) repairs the order.
+ */
+let lastDraw: { entry: Entry; at: number } | undefined
+
+function place(entry: Entry, now: number) {
+  const above = lastDraw && now - lastDraw.at <= PASS_MS ? lastDraw.entry : undefined
+  lastDraw = { entry, at: now }
+  const at = order.indexOf(entry)
+  if (!above || above === entry) {
+    if (at < 0) order.push(entry) // drawn alone: new output at the bottom, until a pass says otherwise
+    return
+  }
+  if (at >= 0 && order[at - 1] === above) return
+  if (at >= 0) order.splice(at, 1)
+  order.splice(order.indexOf(above) + 1, 0, entry)
+}
+
+/**
+ * The transcript rows on screen now, top to bottom, found outward from a row
+ * the engine is drawing at this moment (so certainly on screen).
+ *
+ * A neighbour joins only when the two agree: the row above must show its last
+ * line and this one its first; the row below must show its first line and
+ * this one its last. A stale report from another scroll position fails that
+ * test, so it cannot pull the window off.
+ */
+function visibleRun(seed: Entry): Entry[] {
+  const all = order
+  let top = all.indexOf(seed)
+  let bottom = top
+  while (top > 0) {
+    const here = all[top]!.shown
+    const above = all[top - 1]!.shown
+    if (!here || here.first > 0 || !above || above.last < above.of - 1) break
+    top--
+  }
+  while (bottom < all.length - 1) {
+    const here = all[bottom]!.shown
+    const below = all[bottom + 1]!.shown
+    if (!here || here.last < here.of - 1 || !below || below.first > 0) break
+    bottom++
+  }
+  return all.slice(top, bottom + 1)
 }
 
 /** Roughly where a row's text sits, line by line (see matrix.ts). */
@@ -190,26 +272,49 @@ function extentsOf(e: TranscriptInput, columns: number): Extent[] {
 }
 
 /**
- * Where a row sits: `base`, so that its line `r` is `base - r` lines above the
- * window's bottom.
- *
- * At the live bottom this counts up from the end of the transcript: the rows
- * below this one, and the reply still streaming under them all. Scrolled back,
- * the rows below the window are off screen, so it counts down from the row at
- * the window's top instead, which reports on every move.
+ * The window's height in lines: the estimate from the terminal's size, until a
+ * run of rows cut off at both edges of the window measures it exactly.
  */
-function baseOf(entry: Entry, streamRows: number, viewRows: number): number | undefined {
-  if (!isAway()) {
-    let below = streamRows
-    for (const other of entries.values()) if (other.seq > entry.seq) below += other.of
-    return entry.of - 1 + below
+let measuredRows: { rows: number; forViewport: number } | undefined
+
+function windowRows(viewportRows: number): number {
+  if (measuredRows?.forViewport === viewportRows) return measuredRows.rows
+  return Math.max(4, viewportRows - CHROME_ROWS)
+}
+
+/**
+ * Where a row sits: `base`, so that its line `r` is `base - r` lines above the
+ * bottom of the window.
+ *
+ * It is counted along the run of rows on screen around it (`visibleRun`),
+ * from whichever edge of the window that run is pinned to:
+ *
+ * - Cut off at the bottom of the window: up from its lowest line on screen.
+ * - Otherwise, cut off at the top: down from the top of the window. Lines the
+ *   engine draws but does not report (its own notices, the spinner) can sit
+ *   below the last reported row, so the bottom is not to be trusted there.
+ * - Cut off at neither (a conversation shorter than the window): up from its
+ *   last line, the newest output, with any reply still streaming below added.
+ */
+function baseOf(entry: Entry, shown: OnScreen, streamRows: number, viewportRows: number): number {
+  const run = visibleRun(entry)
+  const at = run.indexOf(entry)
+  const lines = (e: Entry) => (e.shown ? e.shown.last - e.shown.first + 1 : 0)
+  const top = run[0]!
+  const lowest = run[run.length - 1]!
+  const isTopCut = !!top.shown && top.shown.first > 0
+  if (isTopCut && isBottomClipped(lowest.shown)) {
+    measuredRows = { rows: run.reduce((n, e) => n + lines(e), 0), forViewport: viewportRows }
   }
-  let top: Entry | undefined
-  for (const other of entries.values()) if (other.shown && (!top || other.seq < top.seq)) top = other
-  if (!top?.shown) return undefined
-  let offset = -top.shown.first // the window row of `top`'s line 0
-  for (const other of entries.values()) if (other.seq >= top.seq && other.seq < entry.seq) offset += other.of
-  return viewRows - 1 - offset
+  if (isTopCut && !isBottomClipped(lowest.shown)) {
+    let above = 0
+    for (const other of run.slice(0, at)) above += lines(other)
+    return windowRows(viewportRows) - 1 - above + shown.first
+  }
+  let below = 0
+  for (const other of run.slice(at + 1)) below += lines(other)
+  const isAtLiveBottom = lowest === newest() && !isBottomClipped(lowest.shown)
+  return shown.last + below + (isAtLiveBottom ? streamRows : 0)
 }
 
 /**
@@ -304,22 +409,17 @@ const draw: Draw = async ($, e, next) => {
   }
 
   const columns = e.viewport.columns
-  const viewRows = Math.max(4, e.viewport.rows - CHROME_ROWS)
-  const isAtBottom = !isAway()
+  const viewRows = windowRows(e.viewport.rows)
   // The streaming reply sits below the newest row; that row carries its rain.
-  const streamExtents = stream && isAtBottom ? markdownExtents(stream.text, columns) : []
-  const base = baseOf(entry, streamExtents.length, viewRows)
-  if (base === undefined) {
-    mounts.delete(key)
-    return inner
-  }
-  const isAnchor = key === bottomKey && streamExtents.length > 0 && shown.last === shown.of - 1
+  const streamExtents = stream ? markdownExtents(stream.text, columns) : []
+  const base = baseOf(entry, shown, streamExtents.length, e.viewport.rows)
+  const isAnchor = entry === newest() && streamExtents.length > 0 && shown.last === shown.of - 1
   const mount: Mount = {
     requestId: e.requestId,
     seed: seedOf(key),
     base,
     viewRows,
-    curve: isAtBottom ? settings.reach : 'scrolled',
+    curve: hasScrolled ? 'scrolled' : settings.reach,
     extents: isAnchor ? [...extentsOf(e, columns), ...streamExtents] : extentsOf(e, columns),
     overlays: [],
   }
@@ -372,6 +472,11 @@ function frame($: EngineInterface) {
     layoutDirtyAt = 0
     void update($, layout, n => (n ?? 0) + 1)
   }
+  // A move that might have been a scroll is one, unless output arrived around then.
+  if (maybeScrollAt && now - maybeScrollAt > 300) {
+    if (Math.abs(lastGrowthAt - maybeScrollAt) > 300) scrolled(maybeScrollAt)
+    maybeScrollAt = 0
+  }
   void syncPaused($)
   if (isScrolling()) return
 
@@ -397,7 +502,9 @@ function frame($: EngineInterface) {
  * was made or changed while rain was drawn, the text seen then (`overRain`)
  * so syncPaused can tell whether the copy caught glyphs.
  */
-let selection: { text: string; changedAt: number; requestId?: string; overRain?: string } | undefined
+let selection:
+  | { text: string; changedAt: number; requestId?: string; overRain?: string; isDismissed?: boolean }
+  | undefined
 
 /**
  * Sets `paused` and `keptClean`, which every overlay reads, and keeps copies clean.
@@ -409,10 +516,16 @@ let selection: { text: string; changedAt: number; requestId?: string; overRain?:
  * text must never have rain on it. The selection is reported live while it
  * is made, which gives a frame or two to clear the rain before the release.
  * Once it has not changed for the resume delay, the rain returns everywhere
- * except the transcript row the selection lies in, which stays clean for as
- * long as the selection is reported (until the next prompt or command). A
- * selection across several rows does not say which rows it covers, so for
- * that one the rain stays paused until the selection clears.
+ * except the transcript row the selection lies in, which stays clean while the
+ * selection may still be highlighted. A selection across several rows does
+ * not say which rows it covers, so for that one the rain stays paused.
+ *
+ * The engine keeps answering with the last selection after its highlight is
+ * gone, until the next prompt or command, and says nothing when a click takes
+ * the highlight down. The one signal a mod gets is typing in the prompt box
+ * (`prompt.edit`), which always clears the highlight: from then on that
+ * selection holds nothing back. A new selection changes the answer and starts
+ * over; one made over rain is caught by the repair below.
  *
  * A selection made faster than one frame (a double-click on a word, say) is
  * copied before the rain can step aside. If the text it read while rain was
@@ -430,6 +543,8 @@ async function syncPaused($: EngineInterface) {
   } else if (!selection || selection.text !== current.text) {
     const overRain = isRaining ? current.text : selection?.overRain
     selection = { text: current.text, changedAt: now, requestId: current.requestId, overRain }
+  } else if (current.requestId && !selection.requestId) {
+    selection.requestId = current.requestId // the same selection, named again
   } else if (selection.overRain !== undefined && !isRaining && now - selection.changedAt > 300) {
     // Settled with the rain gone: the live selection now reads the real text.
     const sawGlyphs = selection.overRain !== current.text
@@ -437,9 +552,10 @@ async function syncPaused($: EngineInterface) {
     if (sawGlyphs) await $.ui.copy({ text: current.text })
   }
 
-  const isSelecting = !!selection && (now - selection.changedAt < settings.resumeMs || !selection.requestId)
+  const live = selection?.isDismissed ? undefined : selection
+  const isSelecting = !!live && (now - live.changedAt < settings.resumeMs || !live.requestId)
   const shouldPause = isScrolling() || isSelecting
-  const clean = selection?.requestId ?? ''
+  const clean = live?.requestId ?? ''
   if ((await read($, paused)) !== shouldPause) await update($, paused, () => shouldPause)
   if ((await read($, keptClean)) !== clean) await update($, keptClean, () => clean)
 }
@@ -478,9 +594,12 @@ export const register: Register = (on, options) => {
   // A /clear empties the transcript: forget every row measured so far.
   on('session.end', ($, e, next) => {
     entries.clear()
+    order.length = 0
+    lastDraw = undefined
     mounts.clear()
-    bottomKey = ''
     lastScrollAt = 0
+    maybeScrollAt = 0
+    hasScrolled = false
     stream = undefined
     selection = undefined
     return next(e)
@@ -492,7 +611,16 @@ export const register: Register = (on, options) => {
     if (stream?.id !== e.message_id) stream = { id: e.message_id, text: '' }
     stream.text += e.delta
     if (e.final) stream = undefined
-    layoutDirtyAt ||= Date.now()
+    lastGrowthAt = Date.now()
+    layoutDirtyAt ||= lastGrowthAt
+    return next(e)
+  })
+
+  // Typing in the prompt box takes any selection's highlight down, so the row
+  // it lay in no longer needs keeping clean. Only the fact of the edit is
+  // used; the event goes on untouched.
+  on('prompt.edit', ($, e, next) => {
+    if (selection) selection.isDismissed = true
     return next(e)
   })
 

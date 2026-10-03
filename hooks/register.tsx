@@ -57,8 +57,7 @@ const TRANSCRIPT = [
 type Draw = MatchedHook<'ui.render', { component: typeof TRANSCRIPT }>
 type TranscriptInput = Parameters<Draw>[1]
 
-// Rows of the fullscreen layout that are never transcript (prompt, rules, footer):
-// the cap on its height before the rows have reported.
+// Rows of the fullscreen layout that are never transcript: prompt, rules, footer.
 const CHROME_ROWS = 6
 
 // --- module state (rebuilt on reload; the next render fills it again) --------
@@ -66,7 +65,7 @@ const CHROME_ROWS = 6
 type OnScreen = { first: number; last: number; of: number }
 
 /** What the engine last reported for a transcript row; `seq` is its order, top to bottom. */
-type Entry = { seq: number; of: number; shown: OnScreen | null }
+type Entry = { seq: number; of: number }
 
 /** One raster laid over a row: `rows` x `width` cells at (`row`, `col`) of the row's drawing. */
 type Overlay = {
@@ -101,7 +100,7 @@ let settings = { reach: 'balanced' as Reach, glyphs: 'katakana' as GlyphSet }
 function measure(key: string, shown: OnScreen | null): Entry {
   let entry = entries.get(key)
   if (!entry) {
-    entry = { seq: nextSeq++, of: shown?.of ?? 0, shown }
+    entry = { seq: nextSeq++, of: shown?.of ?? 0 }
     entries.set(key, entry)
     bottomKey = key
     layoutDirtyAt ||= Date.now()
@@ -109,7 +108,6 @@ function measure(key: string, shown: OnScreen | null): Entry {
     entry.of = shown.of
     layoutDirtyAt ||= Date.now()
   }
-  entry.shown = shown
   // The newest row is the bottom of the transcript: if any of it is out of
   // view, the person has scrolled away from the live end.
   if (key === bottomKey) isScrolled = !shown || shown.last < shown.of - 1
@@ -120,13 +118,6 @@ function measure(key: string, shown: OnScreen | null): Entry {
 function rowsBelow(seq: number): number {
   let sum = 0
   for (const entry of entries.values()) if (entry.seq > seq) sum += entry.of
-  return sum
-}
-
-/** The transcript's height now: every row's reported on-screen lines, summed. */
-function visibleRows(): number {
-  let sum = 0
-  for (const { shown } of entries.values()) if (shown) sum += shown.last - shown.first + 1
   return sum
 }
 
@@ -227,7 +218,7 @@ const draw: Draw = async ($, e, next) => {
     seed: seedOf(key),
     of: shown.of,
     below: rowsBelow(entry.seq),
-    viewRows: Math.max(4, Math.min(visibleRows() || Infinity, e.viewport.rows - CHROME_ROWS)),
+    viewRows: Math.max(4, e.viewport.rows - CHROME_ROWS),
     extents: extentsOf(e, columns),
     overlays: [],
   }
@@ -262,7 +253,7 @@ async function hintFullscreen($: EngineInterface) {
   isHinted = true
   if (await $.store.get('fullscreenHinted')) return
   await $.store.set('fullscreenHinted', true)
-  $.ui.toast('neocode: the Matrix rain needs the fullscreen renderer. Run /tui fullscreen', { timeoutMs: 10000 })
+  $.ui.toast('The Matrix rain needs the fullscreen renderer. Run /tui fullscreen', { timeoutMs: 10000 })
 }
 
 // --- the frame timer -----------------------------------------------------------
@@ -380,7 +371,7 @@ export const register: Register = (on, options) => {
       await $.store.set('enabled', isOn)
     }
     const where = e.presentation?.isFullscreen === false ? ' (needs the fullscreen renderer: /tui fullscreen)' : ''
-    $.ui.toast(`neocode: rain ${isOn ? 'on' : 'off'}${where}`)
+    $.ui.toast(`Rain ${isOn ? 'on' : 'off'}${where}`)
     return {}
   })
 

@@ -77,6 +77,18 @@ describe('drawing', () => {
     expect(JSON.stringify(tree)).toContain('"engine"')
   })
 
+  test('leaves a short transcript readable: decay is measured against the screen, not the content', async ($, on) => {
+    on('ui.render', () => ENGINE)
+    const ui = await $.ui.mount({
+      plugin: 'neocode',
+      surface: 'terminal',
+      component: 'AssistantMessage',
+      props: { ...REPLY, onScreen: { first: 0, last: 4, of: 5 } },
+      viewport: VIEWPORT,
+    })
+    expect(hasRaster(await ui.drawn())).toBe(false)
+  })
+
   for (const surface of ['terminal', 'desktop'] as const) {
     test(`leaves a ${surface} row alone when the surface reports no rows`, async ($, on) => {
       on('ui.render', () => ENGINE)

@@ -1,0 +1,17 @@
+{
+  "name": "neocode",
+  "description": "neocode: a Claude Code mod that turns scrolling code into Matrix digital rain.",
+  "owner": {
+    "name": "Darren Forde",
+    "url": "https://github.com/darrenjforde"
+  },
+  "plugins": [
+    {
+      "name": "neocode",
+      "source": "./",
+      "description": "Matrix-style ambience: code decays into upward-streaming digital rain as it scrolls toward the top of the screen. Display-only.",
+      "category": "fun",
+      "tags": ["matrix", "ambience", "mod", "animation"]
+    }
+  ]
+}

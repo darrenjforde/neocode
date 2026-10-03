@@ -1,0 +1,45 @@
+{
+  "name": "neocode",
+  "displayName": "neocode",
+  "version": "0.1.0",
+  "description": "Matrix-style ambience for Claude Code: code decays into upward-streaming digital rain as it scrolls toward the top of the screen. Display-only; scroll up or /neocode off to read.",
+  "author": {
+    "name": "Darren Forde",
+    "url": "https://github.com/darrenjforde"
+  },
+  "homepage": "https://github.com/darrenjforde/neocode",
+  "repository": "https://github.com/darrenjforde/neocode",
+  "license": "MIT",
+  "keywords": ["matrix", "digital-rain", "ambience", "mod", "terminal", "animation", "theme", "fun"],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "enabled": {
+      "type": "boolean",
+      "title": "Rain on at start",
+      "description": "Whether the effect starts on. /neocode toggles it and remembers your choice.",
+      "default": true
+    },
+    "reach": {
+      "type": "string",
+      "title": "Reach",
+      "description": "How far down the screen the decay reaches: gentle, balanced or deep.",
+      "default": "balanced",
+      "options": ["gentle", "balanced", "deep"]
+    },
+    "glyphs": {
+      "type": "string",
+      "title": "Glyphs",
+      "description": "katakana: authentic Matrix glyphs. letters: ASCII only, for fonts without half-width katakana.",
+      "default": "katakana",
+      "options": ["katakana", "letters"]
+    },
+    "fps": {
+      "type": "number",
+      "title": "Frames per second",
+      "description": "Animation rate, 5 to 30. Lower it if your terminal struggles.",
+      "default": 15,
+      "min": 5,
+      "max": 30
+    }
+  }
+}

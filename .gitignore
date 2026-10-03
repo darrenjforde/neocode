@@ -1,0 +1,9 @@
+# Written by Claude Code each time it loads the mod from this folder: this
+# machine's API declarations, built-in tools and connected MCP tools.
+.claude-plugin/types/
+
+# Local Claude Code settings for working on this repo.
+.claude/
+
+node_modules/
+.DS_Store

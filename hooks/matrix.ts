@@ -11,6 +11,13 @@ export type Extent = readonly [start: number, end: number]
 /** How far up the screen the decay starts and where it is total. */
 export type Reach = 'gentle' | 'balanced' | 'deep'
 
+/**
+ * A decay curve: a person's Reach, or `scrolled`, used while they read back
+ * through the conversation. That one keeps the lower half of the window
+ * fully readable, whatever the Reach, and turns only the upper half to rain.
+ */
+export type Curve = Reach | 'scrolled'
+
 /** `katakana`: authentic Matrix glyphs. `letters`: ASCII only, for fonts without half-width katakana. */
 export type GlyphSet = 'katakana' | 'letters'
 
@@ -52,18 +59,19 @@ export function seedOf(s: string): number {
 
 // [clean, full]: fractions of the transcript's height above the prompt where
 // the decay starts and where it is complete.
-const REACH: Record<Reach, readonly [number, number]> = {
+const CURVES: Record<Curve, readonly [number, number]> = {
   gentle: [0.45, 1.0],
   balanced: [0.25, 0.8],
   deep: [0.1, 0.6],
+  scrolled: [0.5, 1.0],
 }
 
 /**
  * How decayed a row is, 0 (readable) to 1 (pure rain), from its distance in
  * rows above the bottom of the transcript and the transcript's height.
  */
-export function corruption(distance: number, viewRows: number, reach: Reach): number {
-  const [clean, full] = REACH[reach] ?? REACH.balanced
+export function corruption(distance: number, viewRows: number, curve: Curve): number {
+  const [clean, full] = CURVES[curve] ?? CURVES.balanced
   const x = (distance / Math.max(1, viewRows) - clean) / (full - clean)
   if (x <= 0) return 0
   if (x >= 1) return 1

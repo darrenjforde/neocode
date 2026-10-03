@@ -1,8 +1,8 @@
 {
   "name": "neocode",
   "displayName": "neocode",
-  "version": "0.1.0",
-  "description": "Matrix-style ambience for Claude Code: code decays into upward-streaming digital rain as it scrolls toward the top of the screen. Display-only; scroll up or /neocode off to read.",
+  "version": "0.2.0",
+  "description": "Matrix-style ambience for Claude Code: code decays into upward-streaming digital rain as it scrolls toward the top of the screen. Display-only: scrolling or selecting clears it until you pause; /neocode toggles it.",
   "author": {
     "name": "Darren Forde",
     "url": "https://github.com/darrenjforde"
@@ -32,6 +32,14 @@
       "description": "katakana: authentic Matrix glyphs. letters: ASCII only, for fonts without half-width katakana.",
       "default": "katakana",
       "options": ["katakana", "letters"]
+    },
+    "resumeDelay": {
+      "type": "number",
+      "title": "Resume after (seconds)",
+      "description": "Scrolling or selecting text clears the rain at once; it returns after this many seconds without either. 1 to 60.",
+      "default": 5,
+      "min": 1,
+      "max": 60
     },
     "fps": {
       "type": "number",

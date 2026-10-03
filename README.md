@@ -34,6 +34,8 @@ claude plugin marketplace add darrenjforde/neocode
 claude plugin install neocode@neocode
 ```
 
+The installer may say the plugin's options aren't set yet. That's fine: the defaults apply until you change them.
+
 Start a new session, or run `/reload-plugins`, and the rain begins as soon as there's enough transcript to scroll.
 
 ## Turning it on and off
@@ -105,6 +107,8 @@ claude --plugin-dir . --settings '{"tui":"fullscreen"}'   # run it from a clone;
 claude plugin test .                                      # tests in tests/
 claude plugin validate --strict .claude-plugin/plugin.json
 ```
+
+Bump `version` in `.claude-plugin/plugin.json` for every release: `claude plugin update` only fetches a version it hasn't installed.
 
 Claude Code writes its API declarations into `.claude-plugin/types/` the first time it loads the folder. After that, `npx -p typescript tsc -p .` type-checks the mod.
 

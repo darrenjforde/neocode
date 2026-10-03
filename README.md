@@ -60,7 +60,7 @@ You can't read decayed code, so neocode steps aside whenever you're interacting 
 
 ### How scrolling is detected
 
-Mods get no scroll event for the transcript. Instead, Claude Code reports which lines of each row are on screen whenever they change. New output at the live bottom only ever pushes rows up and off the top. So neocode treats any other movement as a scroll: a row cut off at the bottom of the window, a row coming into view from off screen, or a row's top line coming back. Moves that happen as output arrives are ignored.
+Mods get no scroll event for the transcript. Instead, Claude Code reports which lines of each row are on screen whenever they change. New output at the live bottom only ever pushes rows up and off the top. So neocode treats any other movement as a scroll: a row cut off at the bottom of the window, a row coming into view from off screen, or a row's top line coming back. It ignores moves that happen as output arrives, or as the prompt box changes height while you type or send.
 
 A row that jumps off screen in one move (Ctrl+Home, Ctrl+End, PgUp) isn't always reported again. So neocode never trusts a single row's report. It works out which rows are on screen from neighbouring rows that agree with each other, in the order Claude Code draws them.
 
@@ -92,7 +92,13 @@ While a reply streams, Claude Code draws it in a part of the screen that mods ca
 
 - It reads the streamed lines from Claude Code's `MessageDisplay` event, without changing them, to know how tall the reply is so far. The rows *above* the reply decay as it pushes them up the screen.
 - It hangs rain from the row just above the reply, which fills the space around the streamed lines.
-- The moment the reply completes, the reply itself decays.
+- That row stops being drawn once the reply pushes it off the top, so the rain over the reply thins out gradually as the reply nears the window's height, rather than vanishing all at once.
+- When the reply completes, it becomes a row of its own and its rain ramps in over a moment.
+
+Why the streamed text itself can't take rain: it is drawn in front of anything a mod lays over it. The only way to change it is to rewrite each batch of streamed lines as it arrives, which is display-only (the stored conversation keeps the real text). Tests showed three problems:
+- Swapping characters for glyphs puts the glyphs into anything you copy, which breaks the clipboard guarantee.
+- A batch can't be changed once shown, so lines can't decay as they rise.
+- Colour-only restyling breaks markdown tables and syntax highlighting, and stays on the reply by the prompt.
 
 All the maths lives in [`hooks/matrix.ts`](hooks/matrix.ts), which has no I/O. The hooks are in [`hooks/register.tsx`](hooks/register.tsx).
 
@@ -121,7 +127,7 @@ Run `claude plugin validate --strict .claude-plugin/plugin.json` in a clone to s
 - **Fullscreen renderer only.** neocode needs `/tui fullscreen`. The default renderer prints finished rows into terminal scrollback, where they can't be redrawn.
 - **The terminal's own scrollbar and search don't see the conversation.** Under the fullscreen renderer the conversation lives on the terminal's alternate screen. The terminal's scrollbar, Cmd+F and native scrollback don't reflect it, and dragging the native scrollbar can show blank space or lines from before Claude Code launched. This happens with or without neocode. Scroll with the mouse wheel, or use Ctrl+O for transcript mode.
 - **Text positions are estimates.** A mod is told how tall each row is, but not what's in it. neocode estimates where text sits from the row's content (markdown, tool input or output), so in the transition band a bite occasionally lands on whitespace. Higher up, everything is rain anyway.
-- **A reply still streaming isn't fully reachable.** Claude Code paints streaming text over anything a mod lays on it, and it stops drawing the row above once that row scrolls off. So a reply's own text decays only once it completes. Until then you get rain around its lines, but only until the reply fills the screen; after that it stays plain until it's done. See [While Claude is still writing](#while-claude-is-still-writing).
+- **A reply still streaming isn't fully reachable.** Claude Code paints streaming text over anything a mod lays on it, and it stops drawing the row above once that row scrolls off. So a reply's own text decays only once it completes. Until then you get rain around its lines, which fades out as the reply nears the window's height. A reply taller than the window streams plain until it's done. See [While Claude is still writing](#while-claude-is-still-writing).
 - **A selection keeps its row clean until you type, send a prompt or run a command,** because Claude Code tells mods nothing when a click clears it. A multi-row selection keeps all the rain paused that long, because no API says which rows it covers.
 - **Rows the engine doesn't report**, such as the welcome banner and the live spinner, are left as they are.
 - **Glyph width.** Half-width katakana are one cell wide in standard terminal fonts. A font that draws them wide will misalign the rain; use `letters`.

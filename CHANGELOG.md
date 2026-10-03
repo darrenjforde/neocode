@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0 (2026-10-04)
+
+- **Graceful exit while a reply streams.** The rain around a streaming reply used to vanish in one frame when the reply grew to about the window's height, because the row it hangs from scrolls off and stops being drawn. It now thins out over the last stretch before that.
+- **Smooth arrival when a reply completes.** The finished reply's rain ramps in over 0.8 s instead of appearing in a single frame.
+- **Fixed: the rain pausing after you send a long prompt.** When a prompt that wrapped onto several lines left the prompt box, the transcript moved down and neocode took that for a scroll (since 0.2.1). Moves caused by the prompt box changing height no longer count as scrolls.
+- Investigated keeping the rain live over replies taller than the window. Every site a mod can draw in either scrolls off with the conversation or clips what it draws. The only way to change the streamed text is the `MessageDisplay` event's `displayContent`. Tests showed swapping in glyphs leaks into copies, that lines can't be changed once shown, and that colour-only restyling breaks tables and highlighting. So the streamed text itself still decays only once the reply completes.
+
 ## 0.2.1 (2026-10-04)
 
 - **Fixed: rain returning inconsistently after scrolling.** It could return over the upper half of the window, over a thin strip, or not at all, depending on where you'd scrolled. Two causes:

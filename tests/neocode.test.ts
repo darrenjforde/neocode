@@ -3,7 +3,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 
-import { BLOCK, bites, corruption, markdownExtents, paint } from '../hooks/matrix'
+import { BLOCK, bites, corruption, markdownExtents, paint, streamFade } from '../hooks/matrix'
 
 const REPLY = {
   text: '```python\nfor cell in grid:\n    print(cell)\n```\nDone.',
@@ -280,6 +280,28 @@ describe('scrolled back (0.2.1 fixes)', () => {
     expect(covered).toContain(11) // its last line sits twelve lines up, in the rain
   })
 
+  test('rows shifting down as a sent prompt leaves the box are not a scroll', QUICK, async ($, on) => {
+    on('ui.render', () => ENGINE)
+    const clock = mockSession(on)
+    on('ui.selection', () => ({ value: undefined }))
+    on('ui.blit', () => ({ value: {} }))
+    await startSession($)
+    const row = await $.ui.mount(reply('row', { first: 6, last: 29, of: 30 })) // the newest row, its end in view
+    await wait(500)
+    // A two-line prompt is sent: Claude Code draws it at once as a placeholder
+    // row, and the emptied prompt box gives the window two lines back.
+    await $.ui.mount({
+      plugin: 'neocode', surface: 'terminal', component: 'UserMessage', requestId: 'placeholder',
+      props: { text: 'a long prompt', origin: { kind: 'composer' }, isExpanded: false, onScreen: { first: 0, last: 1, of: 2 } },
+      viewport: VIEWPORT,
+    })
+    await row.redraw({ ...REPLY, onScreen: { first: 4, last: 29, of: 30 } })
+    await wait(400)
+    await clock.advance(100)
+    await row.redraw()
+    expect(hasRaster(await row.drawn())).toBe(true)
+  })
+
   test('a jump that cuts no row off at the bottom still counts as a scroll', QUICK, async ($, on) => {
     on('ui.render', () => ENGINE)
     const clock = mockSession(on)
@@ -327,4 +349,128 @@ describe('selection (0.2.1 fixes)', () => {
     expect(hasRaster(await other.drawn())).toBe(true)
   })
 })
+
+describe('streaming reply fade (0.3.0)', () => {
+  test('the rain over a stream thins out smoothly before the row carrying it leaves', () => {
+    let last = 1
+    for (let rows = 0; rows <= 30; rows++) {
+      const f = streamFade(rows, 30)
+      expect(f).toBeLessThanOrEqual(last) // never thickens as the reply grows
+      expect(last - f).toBeLessThan(0.35) // no cliff: under a third gone per line
+      last = f
+    }
+    expect(streamFade(18, 30)).toBe(1) // a short reply keeps it all
+    expect(streamFade(28, 30)).toBe(0) // gone before the reply fills the window
+  })
+
+  // Glyphs the rasters draw on each line of the row's drawing.
+  function glyphsPerLine(tree: unknown): Map<number, number> {
+    const out = new Map<number, number>()
+    const walk = (node: any, top: number) => {
+      if (!node || typeof node !== 'object') return
+      if (node.type === 'Raster') {
+        const bytes = (Uint8Array as any).fromBase64(node.props.cells) as Uint8Array
+        const words = new Uint32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4)
+        for (let i = 0; i < node.props.rows; i++) {
+          let n = 0
+          for (let j = 0; j < node.props.columns; j++) if (words[(i * node.props.columns + j) * 3] !== 0x20) n++
+          out.set(top + i, (out.get(top + i) ?? 0) + n)
+        }
+      }
+      const childTop = node.props?.position === 'absolute' ? Number(node.props.top ?? 0) : top
+      for (const child of node.children ?? []) walk(child, childTop)
+    }
+    walk(tree, 0)
+    return out
+  }
+
+  test('the streamed lines lose their rain gradually as the reply nears the window height', async ($, on) => {
+    on('ui.render', () => ENGINE)
+    on('classic.MessageDisplay', () => ({}))
+    const props = { text: 'Write me a parser', origin: { kind: 'composer' as const }, isExpanded: false }
+    const prompt = await $.ui.mount({
+      plugin: 'neocode',
+      surface: 'terminal',
+      component: 'UserMessage',
+      props: { ...props, onScreen: { first: 0, last: 1, of: 2 } },
+      viewport: VIEWPORT,
+    })
+    const window = 24 // VIEWPORT's 30 rows less the prompt and footer
+    const streamGlyphs = async (lines: number, index: number) => {
+      const delta = Array.from({ length: lines }, (_, i) => `x${i}`).join('\n') + '\n'
+      await $.classic.MessageDisplay({ turn_id: 't', message_id: `m${index}`, index: 0, final: false, delta })
+      await prompt.redraw()
+      let n = 0
+      for (const [line, count] of glyphsPerLine(await prompt.drawn())) if (line >= 2) n += count
+      return n
+    }
+    const full = await streamGlyphs(Math.round(window * 0.66), 0)
+    const thin = await streamGlyphs(Math.round(window * 0.8), 1)
+    const gone = await streamGlyphs(Math.round(window * 0.95), 2)
+    expect(full).toBeGreaterThan(0)
+    expect(thin).toBeGreaterThan(0) // thinned, not cut off
+    expect(thin).toBeLessThan(full * (0.8 / 0.66)) // fewer than the taller reply alone would give
+    expect(gone).toBe(0)
+  })
+
+  // A reply streams under the prompt row (`index` keeps message ids apart),
+  // then completes as a row of its own; returns that row's drawing.
+  async function finishReply($: any, id: string, lines: number) {
+    const anchor = await $.ui.mount({
+      plugin: 'neocode', surface: 'terminal', component: 'UserMessage', requestId: `p-${id}`,
+      props: { text: 'Write it', origin: { kind: 'composer' }, isExpanded: false, onScreen: { first: 0, last: 1, of: 2 } },
+      viewport: VIEWPORT,
+    })
+    const text = Array.from({ length: lines }, (_, i) => `    line ${i} of streamed code`).join('\n')
+    await $.classic.MessageDisplay({ turn_id: 't', message_id: id, index: 0, final: false, delta: text + '\n' })
+    await anchor.redraw() // drawn mid-stream: the rain over the stream takes its fade
+    await $.classic.MessageDisplay({ turn_id: 't', message_id: id, index: 1, final: true, delta: '' })
+    const of = lines + 1
+    return $.ui.mount({
+      plugin: 'neocode', surface: 'terminal', component: 'AssistantMessage', requestId: id,
+      props: { text, isFirstOfReply: true, onScreen: { first: Math.max(0, of - 24), last: of - 1, of } }, viewport: VIEWPORT,
+    })
+  }
+
+  test('a tall reply, its stream faded out, ramps its rain back in when it completes', { timeoutMs: 8000 }, async ($, on) => {
+    on('ui.render', () => ENGINE)
+    on('classic.MessageDisplay', () => ({}))
+    const reply = await finishReply($, 'tall', 30)
+    const first = glyphsTotal(await reply.drawn())
+    await wait(400)
+    await reply.redraw()
+    const mid = glyphsTotal(await reply.drawn())
+    await wait(500)
+    await reply.redraw()
+    const late = glyphsTotal(await reply.drawn())
+    expect(first).toBeLessThan(late / 4) // starts nearly clean, where the fade left it
+    expect(mid).toBeGreaterThan(first) // and climbs gradually
+    expect(mid).toBeLessThan(late)
+  })
+
+  test('a short reply, its stream at full rain, completes without a blink', async ($, on) => {
+    on('ui.render', () => ENGINE)
+    on('classic.MessageDisplay', () => ({}))
+    const reply = await finishReply($, 'short', 12)
+    const first = glyphsTotal(await reply.drawn())
+    await reply.redraw()
+    expect(first).toBeGreaterThan(0)
+    expect(glyphsTotal(await reply.drawn())).toBeGreaterThan(first / 2) // no drop to nothing and back
+  })
+})
+
+function glyphsTotal(tree: unknown): number {
+  let n = 0
+  const walk = (node: any) => {
+    if (!node || typeof node !== 'object') return
+    if (node.type === 'Raster') {
+      const bytes = (Uint8Array as any).fromBase64(node.props.cells) as Uint8Array
+      const words = new Uint32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4)
+      for (let i = 0; i < words.length; i += 3) if (words[i] !== 0x20) n++
+    }
+    for (const child of node.children ?? []) walk(child)
+  }
+  walk(tree)
+  return n
+}
 

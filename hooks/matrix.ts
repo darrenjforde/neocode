@@ -188,6 +188,21 @@ const PALE = 0xc6cfc6
 
 // --- the rain -------------------------------------------------------------------
 
+/**
+ * How much of the rain over a streaming reply to keep, 1 to 0, from the
+ * reply's height so far against the window's. The rain over a stream hangs
+ * from the row above it, which the engine stops drawing once the reply pushes
+ * it off the top (at about the window's height); this thins the rain out over
+ * the last stretch before that, ending a little early to allow for the
+ * reply's height being an estimate.
+ */
+export function streamFade(streamRows: number, windowRows: number): number {
+  const x = (0.92 * windowRows - streamRows) / (0.22 * windowRows)
+  if (x <= 0) return 0
+  if (x >= 1) return 1
+  return x * x * (3 - 2 * x)
+}
+
 /** Where the upward ripple is now, in rows above the prompt. */
 export function waveAt(t: number, viewRows: number): number {
   return (t * 22) % (viewRows * 1.5 + 8)
@@ -216,6 +231,7 @@ function pick(set: readonly number[], h: number): number {
  * The cell at screen column `x` of a row: `row` is a stable id for the row
  * (so each cell keeps its own rhythm), `d` its distance above the prompt, `c`
  * its corruption, `isText` whether the code has a character there.
+ * `density` (0 to 1) thins the rain out evenly, cell by cell, for a fade.
  *
  * Returns `null` for a cell the overlay leaves blank (rain-free empty space).
  */
@@ -228,7 +244,10 @@ export function paint(
   t: number,
   wave: number,
   glyphs: GlyphSet,
+  density = 1,
 ): Cell | null {
+  // A fading cell drops out for good once density falls below its own threshold.
+  if (density < 1 && hash(x, row, 12) >= density) return null
   const trail = rain(x, d, t)
   const isHead = trail > 0.93
   const nearWave = Math.abs(d - wave) < 1.5

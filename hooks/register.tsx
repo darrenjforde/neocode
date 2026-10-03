@@ -48,6 +48,7 @@ import {
   paint,
   plainExtents,
   seedOf,
+  streamFade,
   waveAt,
 } from './matrix'
 import type { Curve, Extent, GlyphSet, Reach } from './matrix'
@@ -76,6 +77,11 @@ type TranscriptInput = Parameters<Draw>[1]
 // Rows of the fullscreen layout that are never transcript: prompt, rules, footer.
 const CHROME_ROWS = 6
 
+// A reply that has finished streaming arrives as a row of its own, often tall
+// enough to be decayed at once; its rain ramps in over this long instead of
+// appearing in one frame, matching the fade-out over the stream before it.
+const RAMP_MS = 800
+
 // A row that has just appeared or changed height may sit half in view for a
 // moment while the screen catches up; its reports in that time are not scrolls.
 const SETTLE_MS = 400
@@ -90,9 +96,12 @@ type OnScreen = { first: number; last: number; of: number }
 
 /**
  * What the engine last reported for a transcript row: `shown` its last
- * `onScreen`; `changedAt` when it appeared or last changed height.
+ * `onScreen`; `changedAt` when it appeared or last changed height;
+ * `arrivedAt` when it arrived as a reply that had just finished streaming (0
+ * for any other row) and `rampFrom` the fade its stream had reached then: its
+ * rain ramps from that back to full (see RAMP_MS).
  */
-type Entry = { of: number; shown: OnScreen | null; changedAt: number }
+type Entry = { of: number; shown: OnScreen | null; changedAt: number; arrivedAt: number; rampFrom: number }
 
 /** One raster laid over a row: `rows` x `width` cells at (`row`, `col`) of the row's drawing. */
 type Overlay = {
@@ -112,6 +121,11 @@ type Mount = {
   requestId: string
   seed: number
   base: number
+  /** How far its decay has ramped in, 0 to 1 (see RAMP_MS). */
+  ramp: number
+  /** Lines from here on are a streaming reply's, kept at `fade` density (see streamFade). */
+  fadeFrom: number
+  fade: number
   viewRows: number
   curve: Curve
   extents: Extent[]
@@ -124,12 +138,21 @@ const mounts = new Map<string, Mount>()
 let lastScrollAt = 0
 let maybeScrollAt = 0 // a move that may be a scroll, confirmed in `frame` unless output explains it
 let lastGrowthAt = 0 // when output last arrived: a row appeared or grew, or the stream got longer
+let promptAt = 0 // when the prompt box last changed height: edited, or a prompt sent
 let hasScrolled = false // since the last prompt: rain then keeps the lower half of the window readable
 let layoutDirtyAt = 0
 let settings = { reach: 'balanced' as Reach, glyphs: 'katakana' as GlyphSet, resumeMs: 5000 }
 
-/** The reply streaming now, as its display lines have arrived so far. */
-let stream: { id: string; text: string } | undefined
+/**
+ * The reply streaming now, as its display lines have arrived so far, and the
+ * fade its rain is at (see streamFade). Its last flush sets `finishedAt`: from
+ * then it adds no lines below the newest row (the finished reply's own row is
+ * about to report, and takes it over), and it is dropped if that row never
+ * comes. `finished` names the last stream so a late flush for it is ignored.
+ */
+let stream: { id: string; text: string; fade: number; finishedAt?: number } | undefined
+let finished = ''
+let rampUntil = 0 // redraw until then, so a finishing reply's rain ramps in
 
 const isBottomClipped = (s: OnScreen | null | undefined) => !!s && s.last < s.of - 1
 const sameRange = (a: OnScreen | null, b: OnScreen | null) =>
@@ -153,10 +176,11 @@ function scrolled(at: number) {
  *
  * - A row cut off at the bottom of the window, or one that just was, can only
  *   be a scroll, so it clears the rain at once.
- * - Any other move (a row coming into view from off screen, a row's top line
- *   coming back) is a scroll too, unless output arrived around the same time:
- *   the spinner giving way to a streaming reply shifts rows the same way. Those
- *   wait for `frame` to confirm them, a few hundred milliseconds.
+ * - Any other move (a row coming into view from off screen, as after Ctrl+End;
+ *   a row's top line coming back) is a scroll too, unless something else
+ *   explains it within a few hundred milliseconds (`frame` decides): output
+ *   arriving (the spinner giving way to a streaming reply shifts rows), or
+ *   the prompt box changing height as it is edited or sent (`promptAt`).
  *
  * Jumps (Ctrl+Home, Ctrl+End, PgUp) can leave a row's report stale: a row that
  * leaves the screen in one jump is not always reported again. Nothing here
@@ -166,7 +190,7 @@ function measure(key: string, shown: OnScreen | null): Entry {
   const now = Date.now()
   let entry = entries.get(key)
   if (!entry) {
-    entry = { of: shown?.of ?? 0, shown, changedAt: now }
+    entry = { of: shown?.of ?? 0, shown, changedAt: now, arrivedAt: 0, rampFrom: 1 }
     entries.set(key, entry)
     place(entry, now)
     layoutDirtyAt ||= now // a full pass soon, to settle where it goes
@@ -174,8 +198,16 @@ function measure(key: string, shown: OnScreen | null): Entry {
       lastGrowthAt = now
       // A new prompt means the person is back at the live bottom, watching.
       if (key.startsWith('UserMessage:')) hasScrolled = false
-      // The finished reply has its own row now; stop raining on its stream.
-      if (key.startsWith('AssistantMessage:')) stream = undefined
+      // The finished reply has its own row now: stop raining on its stream,
+      // and ramp its own rain in from where the stream's fade left off.
+      if (key.startsWith('AssistantMessage:') && stream) {
+        if (stream.fade < 1) {
+          entry.arrivedAt = now
+          entry.rampFrom = stream.fade
+          rampUntil = now + RAMP_MS
+        }
+        stream = undefined
+      }
     }
     return entry
   }
@@ -327,7 +359,7 @@ function overlaysFor(m: Mount, first: number, last: number, columns: number, pre
   const out: Overlay[] = []
   let blockEnd = first
   for (let r = first; r <= last; r++) {
-    const c = corruption(m.base - r, m.viewRows, m.curve)
+    const c = corruption(m.base - r, m.viewRows, m.curve) * m.ramp
     if (c <= 0) break // lines only get closer to the bottom from here
     if (c >= BLOCK && r === blockEnd) {
       blockEnd = r + 1
@@ -359,12 +391,13 @@ function cellsOf(m: Mount, o: Overlay, t: number): string {
   for (let i = 0; i < o.rows; i++) {
     const r = o.row + i
     const d = m.base - r
-    const c = corruption(d, m.viewRows, m.curve)
+    const c = corruption(d, m.viewRows, m.curve) * m.ramp
     const [start, end] = m.extents[r] ?? [0, 0]
     const rowId = hash(m.seed, r) * 1e6
     for (let j = 0; j < o.width; j++) {
       const x = o.col + j
-      const cell = paint(x, rowId, d, c, x >= start && x < end, t, wave, settings.glyphs)
+      const density = r >= m.fadeFrom ? m.fade : 1
+      const cell = paint(x, rowId, d, c, x >= start && x < end, t, wave, settings.glyphs, density)
       const at = (i * o.width + j) * 3
       words[at] = cell ? cell.glyph : 0x20
       words[at + 1] = cell ? cell.color : 0x01000000
@@ -384,6 +417,8 @@ const draw: Draw = async ($, e, next) => {
   // `undefined` means this surface does not report rows (the main screen, a
   // desktop): neocode has nothing to measure and stays out of the way.
   const wasScrolling = isScrolling()
+  // A sent prompt is drawn at once as a placeholder row, as the prompt box empties.
+  if (e.requestId === 'placeholder') promptAt = Date.now()
   const entry = shown === undefined || e.requestId === 'placeholder' ? undefined : measure(key, shown)
   // This report was a scroll: clear the rain everywhere now, not at the next frame.
   if (!wasScrolling && isScrolling()) $.clock.after(0, () => void syncPaused($))
@@ -411,15 +446,22 @@ const draw: Draw = async ($, e, next) => {
   const columns = e.viewport.columns
   const viewRows = windowRows(e.viewport.rows)
   // The streaming reply sits below the newest row; that row carries its rain.
-  const streamExtents = stream ? markdownExtents(stream.text, columns) : []
+  const streamExtents = stream && !stream.finishedAt ? markdownExtents(stream.text, columns) : []
   const base = baseOf(entry, shown, streamExtents.length, e.viewport.rows)
-  const isAnchor = entry === newest() && streamExtents.length > 0 && shown.last === shown.of - 1
+  const fade = streamFade(streamExtents.length, viewRows)
+  if (stream && !stream.finishedAt) stream.fade = fade
+  const isAnchor = entry === newest() && streamExtents.length > 0 && shown.last === shown.of - 1 && fade > 0
   const mount: Mount = {
     requestId: e.requestId,
     seed: seedOf(key),
     base,
+    fadeFrom: shown.of,
+    fade,
     viewRows,
     curve: hasScrolled ? 'scrolled' : settings.reach,
+    ramp: entry.arrivedAt
+      ? entry.rampFrom + (1 - entry.rampFrom) * Math.min(1, (Date.now() - entry.arrivedAt) / RAMP_MS)
+      : 1,
     extents: isAnchor ? [...extentsOf(e, columns), ...streamExtents] : extentsOf(e, columns),
     overlays: [],
   }
@@ -467,6 +509,13 @@ function frame($: EngineInterface) {
   const now = Date.now()
   const t = now / 1000
 
+  // A finished stream whose row never came (an interrupted reply) is dropped.
+  if (stream?.finishedAt && now - stream.finishedAt > 2000) {
+    stream = undefined
+    layoutDirtyAt ||= now
+  }
+  // A reply ramping its rain in redraws as it goes, so the rain covers more each time.
+  if (now < rampUntil + 150) layoutDirtyAt ||= now
   // Geometry changed (a row arrived or grew, the stream got longer): redraw once it settles.
   if (layoutDirtyAt && now - layoutDirtyAt > 120) {
     layoutDirtyAt = 0
@@ -474,7 +523,8 @@ function frame($: EngineInterface) {
   }
   // A move that might have been a scroll is one, unless output arrived around then.
   if (maybeScrollAt && now - maybeScrollAt > 300) {
-    if (Math.abs(lastGrowthAt - maybeScrollAt) > 300) scrolled(maybeScrollAt)
+    const explained = Math.abs(lastGrowthAt - maybeScrollAt) <= 300 || Math.abs(promptAt - maybeScrollAt) <= 500
+    if (!explained) scrolled(maybeScrollAt)
     maybeScrollAt = 0
   }
   void syncPaused($)
@@ -601,6 +651,8 @@ export const register: Register = (on, options) => {
     maybeScrollAt = 0
     hasScrolled = false
     stream = undefined
+    finished = ''
+    rampUntil = 0
     selection = undefined
     return next(e)
   })
@@ -608,18 +660,24 @@ export const register: Register = (on, options) => {
   // While a reply streams, its lines are drawn where no render hook reaches.
   // Read them to size the rain laid over them; pass the event on untouched.
   on('classic.MessageDisplay', ($, e, next) => {
-    if (stream?.id !== e.message_id) stream = { id: e.message_id, text: '' }
+    if (e.message_id === finished) return next(e) // a late flush for a reply already done
+    if (stream?.id !== e.message_id) stream = { id: e.message_id, text: '', fade: 1 }
     stream.text += e.delta
-    if (e.final) stream = undefined
+    if (e.final) {
+      stream.finishedAt = Date.now()
+      finished = e.message_id
+    }
     lastGrowthAt = Date.now()
     layoutDirtyAt ||= lastGrowthAt
     return next(e)
   })
 
   // Typing in the prompt box takes any selection's highlight down, so the row
-  // it lay in no longer needs keeping clean. Only the fact of the edit is
+  // it lay in no longer needs keeping clean, and may change the box's height,
+  // which moves the transcript without a scroll. Only the fact of the edit is
   // used; the event goes on untouched.
   on('prompt.edit', ($, e, next) => {
+    promptAt = Date.now() // the box may change height: not a scroll
     if (selection) selection.isDismissed = true
     return next(e)
   })

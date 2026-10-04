@@ -6,11 +6,9 @@ As Claude writes, code near the prompt stays crisp and readable. The further a l
 
 It is purely cosmetic. Scroll or select text and the rain clears at once so you can read the real code. It comes back by itself a few seconds after you stop, and `/neocode off` turns it off.
 
-<!-- SCREENSHOT / GIF ──────────────────────────────────────────────────────────
-     Put a screenshot or screen recording here, e.g.:
-     ![neocode in action](docs/neocode.gif)
-     ─────────────────────────────────────────────────────────────────────────── -->
-> 📸 **Screenshot / GIF goes here.**
+<img width="1431" height="1195" alt="Screenshot 2026-10-04 at 17 47 11" src="https://github.com/user-attachments/assets/164fe521-e9d5-4932-bd08-00671586a4db" />
+<img width="1490" height="1057" alt="Screenshot 2026-10-04 at 17 43 24" src="https://github.com/user-attachments/assets/c7fa2a75-e7e9-48bd-8251-56f96e93dba8" />
+
 
 ## Where it works
 

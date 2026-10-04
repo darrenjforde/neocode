@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.3 (2026-10-04)
+
+No change in behaviour. Preparation for submitting to the Claude plugin directory: what the code touches, and what the docs say about it, now agree.
+
+- **Disclosure.** The header comment in `hooks/register.tsx`, the README and the plugin description now list everything the code reads and writes, which they had left incomplete:
+  - the `turn.complete` hook (it reads only whether the turn belongs to a subagent, and passes the event on untouched);
+  - that it reads your current mouse selection, holds its text in memory only to tell whether a copy caught rain glyphs, and that its one clipboard write is re-copying your own selection as it really reads;
+  - that it reads the text of the rows it draws over (keeping only line positions) and the streamed reply's lines, in memory only;
+  - that the settings call returns every setting, of which it looks only at `prefersReducedMotion`;
+  - the toasts, the `/neocode` command registration and the timers.
+- **Tests.** The `MessageDisplay`, `turn.complete` and `prompt.edit` hooks are checked to pass their events and the engine's answers on unchanged. A full session using every feature is checked to write only the two documented store flags, and to copy only your own selection.
+- **README:** a "Try it" section with three worked examples and a "Troubleshooting" section, as the directory policy asks for documentation of how to use and troubleshoot a plugin.
+- **README limitations** now match 0.3.2: little or no rain over the first quarter of a streaming reply; a selection made while a reply streams may not last; an error mid-stream is untested; CPU use measured at 7–13% of a core; and the "text positions" entry no longer says the code never sees a row's content.
+
 ## 0.3.2 (2026-10-04)
 
 - **More rain over a streaming reply, sooner.** In 0.3.1 streamed lines took rain on the finished-row curve at their true height. A reply's lines sit low on the screen, below where your Reach starts decaying, so they had almost no rain until the reply was tall. By then the fade-out, which began at 70% of the window's height, was already thinning it. With `gentle` there was none at all. Streamed lines now decay as if twice as far up. The fade-out now covers only the last third of the window, measured from the space actually left above the reply rather than an estimate of its height. It's also projected each frame from how fast the reply is growing, instead of jumping at each redraw. In tests with a 31-line window, a reply half the window tall had rain on 6, 10 and 13 lines (gentle, balanced, deep), up from 0, 0 and 0.

@@ -683,3 +683,99 @@ describe('a stream that stops without finishing (0.3.2)', () => {
   })
 })
 
+
+// What the plugin is allowed to do, held to what the README and the header of
+// hooks/register.tsx say: the three events it observes go on untouched, the
+// store only ever holds the two documented flags, and the one clipboard write
+// is the person's own selection, re-copied.
+describe('display-only: what the code touches (0.3.3)', () => {
+  test('MessageDisplay, turn.complete and prompt.edit reach the engine untouched, with its answer unchanged', async ($, on) => {
+    const seen: Record<string, unknown[]> = { display: [], complete: [], edit: [] }
+    const answers = {
+      display: {},
+      complete: { text: 'the engine’s own answer' },
+      edit: { text: 'hello', cursor: 5 },
+    }
+    on('classic.MessageDisplay', (_$, e) => (seen.display!.push(e), answers.display))
+    on('turn.complete', (_$, e) => (seen.complete!.push(e), answers.complete as never))
+    on('prompt.edit', (_$, e) => (seen.edit!.push(e), answers.edit as never))
+
+    const display = { turn_id: 't', message_id: 'm', index: 0, final: false, delta: 'one\ntwo\n' }
+    const complete = { turnId: 't', reason: 'aborted', isAborted: true, answer: 'partial', durationMs: 1200 }
+    const edit = {
+      origin: { kind: 'composer' }, text: 'hello', cursor: 5, start: 4, end: 4, inputText: 'o',
+    }
+    const results = {
+      display: await $.classic.MessageDisplay(display),
+      complete: await $.turn.complete(complete as never),
+      // The testing kit raises it at runtime, but its types leave `prompt.edit` out of the engine's `$`.
+      edit: await ($.prompt as unknown as { edit: (e: unknown) => Promise<unknown> }).edit(edit),
+    }
+    // The kit stamps its own fields (session id, event name) on what it raises;
+    // every field the event was raised with must arrive as it was.
+    expect(seen.display).toMatchObject([display])
+    expect(seen.complete).toMatchObject([complete])
+    expect(seen.edit).toMatchObject([edit])
+    expect(results.display).toEqual(answers.display)
+    expect(results.complete).toEqual(answers.complete)
+    expect(results.edit).toEqual(answers.edit)
+  })
+
+  test('a session using every feature writes only the two documented flags, and copies only the selection', QUICK, async ($, on) => {
+    on('ui.render', () => ENGINE)
+    // mockSession's world, but with a store that records every write.
+    const clock = mock.clock(on)
+    on('settings.read', () => ({ value: {} }))
+    on('command.register', (_$, e) => ({ value: { command: e.name } }))
+    on('session.start', (_$, e) => ({ cwd: e.cwd }))
+    const stored: Record<string, unknown> = {}
+    const writes: string[] = []
+    const copies: unknown[] = []
+    on('store.get', (_$, e) => ({ value: stored[e.key] }))
+    on('store.set', (_$, e) => ((stored[e.key] = e.value), writes.push(`set ${e.key}`), { value: undefined }))
+    on('store.delete', (_$, e) => (writes.push(`delete ${e.key}`), { value: undefined }))
+    on('store.keys', () => ({ value: Object.keys(stored) }))
+    let selected: { text: string; requestId?: string } | undefined
+    on('ui.selection', () => ({ value: selected }))
+    on('ui.copy', (_$, e) => (copies.push(e.text), { value: { isCopied: true } }))
+    on('ui.blit', () => ({ value: {} }))
+    on('classic.MessageDisplay', () => ({}))
+    on('turn.complete', () => ({ text: '' }))
+    const frames = async (ms: number) => {
+      for (let t = 0; t < ms; t += 100) {
+        await wait(100)
+        await clock.advance(100)
+      }
+    }
+    await startSession($)
+
+    // Drawn on a surface without the fullscreen renderer: the one-time hint.
+    await $.ui.mount({
+      plugin: 'neocode', surface: 'terminal', component: 'AssistantMessage', requestId: 'plain',
+      props: { ...REPLY, onScreen: ON_SCREEN }, viewport: { columns: 80, rows: 30, isFullscreen: false },
+    })
+    const chosen = await $.ui.mount({
+      plugin: 'neocode', surface: 'terminal', component: 'AssistantMessage', requestId: 'chosen',
+      props: { ...REPLY, onScreen: ON_SCREEN }, viewport: VIEWPORT,
+    })
+    // The toggle, every spelling of it.
+    for (const args of ['off', 'on', 'status', '', 'off', 'on']) {
+      await $.command.run({ command: 'neocode', args, origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 80 } })
+    }
+    // A stream that is cut off, then a selection that catches glyphs and is repaired.
+    await $.classic.MessageDisplay({ turn_id: 't', message_id: 'm', index: 0, final: false, delta: 'a\nb\n' })
+    await $.turn.complete({ turnId: 't', reason: 'aborted', isAborted: true, answer: '', durationMs: 1 } as never)
+    await chosen.redraw()
+    selected = { text: 'ﾊﾟﾗ cell ｱｲｳ', requestId: 'chosen' }
+    await frames(300)
+    await chosen.redraw()
+    selected = { text: 'for cell in grid:', requestId: 'chosen' }
+    await frames(1500)
+
+    // Only the two flags, only ever set, both booleans.
+    expect([...new Set(writes)].sort()).toEqual(['set enabled', 'set fullscreenHinted'])
+    expect(stored).toEqual({ enabled: true, fullscreenHinted: true })
+    // The one clipboard write is the person's own selection, as it really reads.
+    expect(copies).toEqual(['for cell in grid:'])
+  })
+})

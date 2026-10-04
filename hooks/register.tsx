@@ -24,16 +24,42 @@
 // them. The engine paints the streamed text itself over any overlay, and drops
 // that row once it scrolls off, so the reply's own text decays when it completes.
 //
-// What it touches, all of it: it hooks no event that changes conversation
-// data (`session.append`, `tool.call`, `prompt.submit` and the rest), rewrites
-// no props, opens no network connection, runs no process and writes no file.
-// It reads the streamed reply's display lines to size the rain over them, and
-// notes that the prompt box was edited (`prompt.edit`, passed on untouched,
-// its text unread) because typing clears a selection. Its own
-// `$.store` keeps two flags (the /neocode toggle, and whether the fullscreen
-// hint was shown); it reads one setting (`prefersReducedMotion`). The overlay
-// exists only in the terminal's drawing; the one thing it does outside it is
-// keep mouse copies clean (see syncPaused).
+// What it touches, all of it.
+//
+// Hooks. `ui.render` draws the overlay; `session.start` and `session.end` set
+// up and reset; `command.run` answers /neocode. Three more are only observed:
+// each passes the event, and the engine's answer, on exactly as received.
+//   - `classic.MessageDisplay`: reads the streamed reply's display lines, to
+//     size the rain over them.
+//   - `turn.complete`: reads only whether the turn belongs to a subagent
+//     (`agentId`), so that a turn ending without a last flush ends the stream.
+//   - `prompt.edit`: notes that an edit happened, because typing clears a
+//     selection. The text typed is not read.
+// It hooks no event that changes conversation data (`session.append`,
+// `tool.call`, `prompt.submit` and the rest), rewrites no props, opens no
+// network connection, runs no process and reads or writes no file.
+//
+// What it reads, in memory only: never stored, logged or sent anywhere.
+//   - The text of the rows it draws over (replies, prompts, tool input and
+//     output, command output), to estimate where each line's text sits. Only
+//     those line extents, numbers, are kept.
+//   - The streamed reply's lines, kept until its row arrives or its turn ends.
+//   - The person's current mouse selection (`$.ui.selection()`, asked about
+//     every frame): its text and the transcript row it lies in. The text is
+//     held to compare what was selected over rain with what it reads once the
+//     rain is gone; it is dropped when the engine stops reporting that selection,
+//     or at session end.
+//   - The settings: `$.settings.read()` hands over all of them; only
+//     `prefersReducedMotion` is looked at, and nothing else is kept.
+//   - Whether the terminal is fullscreen, and its size (`viewport`).
+//
+// What it writes. `$.store` keeps two flags (the /neocode toggle, and whether
+// the fullscreen hint was shown). The one clipboard write is `$.ui.copy`,
+// used only when a copy caught rain glyphs, and it re-copies the person's own
+// selection, as it really reads (see syncPaused). The rest is the terminal's
+// drawing: `$.ui.blit` on its own rasters, toasts (the /neocode answer and
+// the one-time fullscreen hint), `$.command.register` for /neocode, and the
+// `$.clock` timers behind the animation.
 
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, MatchedHook, Register } from 'claude-code'

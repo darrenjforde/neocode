@@ -14,7 +14,7 @@ It is purely cosmetic. Scroll or select text and the rain clears at once so you 
 
 ## Where it works
 
-- **A terminal running `claude` in the fullscreen renderer** (`/tui fullscreen`). That includes the integrated terminal in VS Code or Cursor. It has been tested in tmux, iTerm2 and macOS Terminal on macOS. Other terminals, Linux and Windows haven't been tested.
+- **A terminal running `claude` in the fullscreen renderer** (`/tui fullscreen`). That includes the integrated terminal in VS Code or Cursor. It has been tested in tmux, iTerm2 and macOS Terminal on macOS. The checks behind the 0.3 releases (streaming, clipboard and scroll behaviour) were run in tmux. Other terminals, Linux and Windows haven't been tested.
 - **The VS Code extension's chat panel:** mods run their hooks there but draw no interface, so neocode shows nothing.
 - **The Desktop app's Code tab:** untested. It may not draw neocode's overlay.
 - **Desktop WSL sessions:** plugins aren't available there.
@@ -44,6 +44,12 @@ claude plugin install neocode@neocode
 The installer may say the plugin's options aren't set yet. That's fine: the defaults apply until you change them.
 
 Start a new session, or run `/reload-plugins`, and the rain begins as soon as there's enough transcript to scroll.
+
+## Try it
+
+1. **See the rain.** Ask Claude for something long, such as `Print a 100-line Python module in one code block`. Once the reply finishes, the lines far from the prompt scramble into green katakana and then dissolve into rain, while the newest lines stay readable. While it is still streaming, you get rain around its lines instead.
+2. **Read something old.** Scroll up with the mouse wheel. The rain clears at once, so you can read the real code. Stop for 5 seconds and it returns.
+3. **Copy real code.** Select a few lines of code with the mouse, then paste. You get the code, never glyphs. `/neocode off` turns the effect off, and `/neocode on` brings it back.
 
 ## Turning it on and off
 
@@ -118,15 +124,22 @@ Mods run unsandboxed with your permissions, so here is everything neocode does:
   - `ui.render` on transcript rows, to draw the overlay.
   - `command.run` for `/neocode`.
   - `session.start` and `session.end`, to set up the timer and command, and to reset after `/clear`.
-  - `classic.MessageDisplay`, to read the streamed reply's lines so it knows how tall the reply is. It passes the event on unchanged, and that event is display-only in Claude Code anyway.
-  - `turn.complete`, to notice that a turn ended, even one stopped before its reply finished streaming. It reads only whether the turn was the main conversation's, and passes the event on unchanged.
-  - `prompt.edit`, to notice that you typed in the prompt box, which clears a selection. It doesn't read what you typed and passes the event on unchanged.
+  - Three events it only observes. Each is passed on, with the engine's answer, exactly as received (a test checks this):
+    - `classic.MessageDisplay`: reads the streamed reply's lines, to know how tall the reply is so far.
+    - `turn.complete`: reads only whether the turn belongs to a subagent, so that a turn that ends without its last streamed lines (an interrupt, an error) ends the stream state.
+    - `prompt.edit`: notes that you typed in the prompt box, which clears a selection. It doesn't read what you typed.
 
   It hooks nothing that changes conversation data: no `session.append`, `tool.call` or `prompt.submit`.
+- **What it reads.** All of it stays in memory. None of it is stored, logged or sent anywhere.
+  - **The text of the rows it draws over**: replies, your prompts, tool input and output, command output. It uses it to estimate where each line's text sits, and keeps only those positions (numbers), not the text.
+  - **The streamed reply's lines**, held until the reply's own row arrives or its turn ends.
+  - **Your current mouse selection**, asked about every frame while the effect runs: its text, and the transcript row it lies in. neocode holds the text to compare what you selected over rain with what it reads once the rain has gone, so it can tell whether a copy caught glyphs. It drops it when Claude Code stops reporting that selection, or when the session ends.
+  - **Your settings.** Claude Code's settings call hands over all of them; neocode looks only at `prefersReducedMotion`, and keeps nothing else.
+  - **Whether the terminal is fullscreen, and its size.**
 - **Never changes what the model sees, what the transcript stores, or what gets written to files.** It doesn't rewrite any props. It draws on top of the engine's own drawing.
-- **Clipboard.** Claude Code copies its mouse selection from what's on screen, both when you release the mouse and when you copy again later (Ctrl+Shift+C, tested in tmux, including while a reply is still streaming). So neocode removes the rain while you select, and never puts it back over the row you selected in while that selection exists. If a selection is made faster than one animation frame (a double-click on a word, for example), the copy on release can catch glyphs. When that happens, neocode re-copies the same selection once the rain is gone, so the clipboard ends up holding the real text you selected.
-- **Storage:** two flags in its own plugin store: your `/neocode` choice, and whether the fullscreen hint has been shown.
-- **Settings:** reads one setting, `prefersReducedMotion`.
+- **Clipboard.** Claude Code copies its mouse selection from what's on screen, both when you release the mouse and when you copy again later (Ctrl+Shift+C, tested in tmux, including while a reply is still streaming). So neocode removes the rain while you select, and never puts it back over the row you selected in while that selection exists. If a selection is made faster than one animation frame (a double-click on a word, for example), the copy on release can catch glyphs. When that happens, neocode re-copies the same selection once the rain is gone, so the clipboard ends up holding the real text you selected. That is the only clipboard write it makes, and it only ever re-copies your own selection, as it really reads. It never copies anything else.
+- **Storage:** two flags in its own plugin store: your `/neocode` choice, and whether the fullscreen hint has been shown. A test checks that nothing else is written.
+- **Other calls:** toasts (the `/neocode` answer and the one-time fullscreen hint), registering the `/neocode` command, timers for the animation, and `$.ui.blit` on its own rain grids.
 - **No** network access, processes, file reads or writes, dependencies, install scripts or build step. The source is the TypeScript you see here.
 
 Run `claude plugin validate --strict .claude-plugin/plugin.json` in a clone to see the engine's own list of what the module hooks and calls.
@@ -135,15 +148,25 @@ Run `claude plugin validate --strict .claude-plugin/plugin.json` in a clone to s
 
 - **Fullscreen renderer only.** neocode needs `/tui fullscreen`. The default renderer prints finished rows into terminal scrollback, where they can't be redrawn.
 - **The terminal's own scrollbar and search don't see the conversation.** Under the fullscreen renderer the conversation lives on the terminal's alternate screen. The terminal's scrollbar, Cmd+F and native scrollback don't reflect it, and dragging the native scrollbar can show blank space or lines from before Claude Code launched. This happens with or without neocode. Scroll with the mouse wheel, or use Ctrl+O for transcript mode.
-- **Text positions are estimates.** A mod is told how tall each row is, but not what's in it. neocode estimates where text sits from the row's content (markdown, tool input or output), so in the transition band a bite occasionally lands on whitespace. Higher up, everything is rain anyway.
-- **A reply still streaming isn't fully reachable.** Claude Code paints streaming text over anything a mod lays on it, so the streamed text itself can't decay until the reply completes. Until then the rain shows only in the gaps around its lines. Claude Code also stops drawing the row the rain hangs from once that row scrolls off. So the rain fades out as the reply nears the window's height, and a reply taller than the window streams plain until it's done. See [While Claude is still writing](#while-claude-is-still-writing).
+- **Text positions are estimates.** A mod is told how tall each row is and which of its lines are on screen, but not where the text sits within a line. neocode estimates that from the row's content (markdown, tool input or output), so in the transition band a bite occasionally lands on whitespace. Higher up, everything is rain anyway.
+- **A reply still streaming isn't fully reachable.** Claude Code paints streaming text over anything a mod lays on it, so the streamed text itself can't decay until the reply completes. Until then the rain shows only in the gaps around its lines. Claude Code also stops drawing the row the rain hangs from once that row scrolls off. So the rain fades out as the reply nears the window's height, and a reply taller than the window streams plain until it's done. There is little or no rain over the first quarter of a streaming reply's height. See [While Claude is still writing](#while-claude-is-still-writing).
+- **A selection made while a reply streams may not last.** Claude Code drops it as the stream moves, with or without neocode. A copy made before that holds the real text. A later copy (Ctrl+Shift+C) may find nothing selected, and then copies nothing.
+- **An error mid-stream is untested.** A reply stopped with Esc, Ctrl+C, a denied permission prompt or `/clear` was tested in tmux. A reply cut off by an API error wasn't, because one couldn't be triggered. neocode is meant to handle it the same way, through the turn's end event and a 10-second timeout on the streamed lines, but that hasn't been seen.
 - **A selection keeps its row clean until you type, send a prompt or run a command,** because Claude Code tells mods nothing when a click clears it. A multi-row selection keeps all the rain paused that long, because no API says which rows it covers.
 - **Native selection can copy rain.** If mouse capture is off (`CLAUDE_CODE_DISABLE_MOUSE=1`, or a terminal's key for bypassing mouse reporting), selection is the terminal's own. neocode can't see it, so text copied from the screen may contain rain glyphs. In tmux with mouse capture off, a copy made with tmux's own selection contained the glyphs, and after `/neocode off` the same copy was clean. Run `/neocode off` before copying that way. Native selection in iTerm2 and macOS Terminal hasn't been tested.
 - **Scroll detection is inferred** from which rows are visible, so an unusual layout change can briefly pause the rain.
 - **Rows the engine doesn't report**, such as the welcome banner, the live spinner and Claude Code's own notices, are left as they are. At the live bottom such rows below the newest output lift the point decay is measured from by their height.
 - **Glyph width.** Half-width katakana are one cell wide in standard terminal fonts. A font that draws them wide will misalign the rain; use `letters`.
 - **Light themes.** The palette is tuned for dark backgrounds.
-- **Cost.** With a full screen of rain at 15 fps, expect about 10–20% of one CPU core while the effect runs, and close to nothing when it's off or paused.
+- **Cost.** With rain on screen at 15 fps, expect about 10% of one CPU core. In tmux on one Mac, Claude Code's process used 7–13% of a core with rain on screen, against about 3% with neocode off. It drops to close to nothing while the effect is paused.
+
+## Troubleshooting
+
+- **Nothing happens.** Check that you're in the fullscreen renderer (`/tui fullscreen`; neocode says so once if you're not), that `/neocode status` says on, and that **Reduce motion** isn't turned on in `/config`. A short conversation stays readable on purpose: decay is measured against the window, and the rain starts once there's enough transcript to scroll.
+- **The rain looks misaligned.** Your font draws half-width katakana wide. Set **Glyphs** to `letters` in `/config`.
+- **Copied text contains rain.** That happens only when the terminal does the selecting, with mouse capture off. See [Native selection can copy rain](#known-limitations). Run `/neocode off` first, or select with Claude Code's own mouse selection.
+- **It uses too much CPU.** Lower **Frames per second** in `/config`, or turn it off with `/neocode off`.
+- **Anything else.** [Open an issue](https://github.com/darrenjforde/neocode/issues) with your Claude Code version, terminal, and whether `/neocode status` says on.
 
 ## Development
 

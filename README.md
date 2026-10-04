@@ -16,6 +16,8 @@ It is purely cosmetic. Scroll or select text and the rain clears at once so you 
 - **The Desktop app's Code tab:** untested. It may not draw neocode's overlay.
 - **Desktop WSL sessions:** plugins aren't available there.
 
+<script type="text/javascript" src="https://cdnjs.buymeacoffee.com/1.0.0/button.prod.min.js" data-name="bmc-button" data-slug="darrenjforde" data-color="#FFDD00" data-emoji="☕" data-font="Cookie" data-text="Buy me a coffee" data-outline-color="#000000" data-font-color="#000000" data-coffee-color="#ffffff" ></script>
+
 ## Requirements
 
 - **Claude Code 2.1.287 or later**, the first release with mods.

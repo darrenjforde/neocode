@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.1 (2026-10-04)
+
+- **Fixed: weaker rain after a scroll.** Once the rain returned after a scroll, it used a separate, gentler curve and measured distance differently, so it covered less than at the live bottom with the same content. Three things differed:
+  - A `scrolled` curve replaced your Reach until your next prompt.
+  - At the live bottom, distance was counted down from the window's top using an estimated height, while scrolled back it was counted up from the bottom edge.
+  - The window height was only measured after certain scrolls, which also changed how far the ripple travels.
+
+  All three are gone. Distance is now always measured up from the lowest line on screen against your Reach, so the rain looks the same wherever you've scrolled to. A new parity test compares the rain per window line, in coverage and colour, at the live bottom and after scrolling to the top, middle and bottom, for every Reach.
+- README: a "Where it works" section, clipboard wording limited to what's been tested, a note on native selection with mouse capture off, and a Contributing section.
+
 ## 0.3.0 (2026-10-04)
 
 - **Graceful exit while a reply streams.** The rain around a streaming reply used to vanish in one frame when the reply grew to about the window's height, because the row it hangs from scrolls off and stops being drawn. It now thins out over the last stretch before that.

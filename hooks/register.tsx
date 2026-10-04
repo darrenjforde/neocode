@@ -51,7 +51,7 @@ import {
   streamFade,
   waveAt,
 } from './matrix'
-import type { Curve, Extent, GlyphSet, Reach } from './matrix'
+import type { Extent, GlyphSet, Reach } from './matrix'
 
 // --- session state (read while drawing, so a change redraws the readers) -----
 
@@ -127,7 +127,6 @@ type Mount = {
   fadeFrom: number
   fade: number
   viewRows: number
-  curve: Curve
   extents: Extent[]
   overlays: Overlay[]
 }
@@ -139,7 +138,6 @@ let lastScrollAt = 0
 let maybeScrollAt = 0 // a move that may be a scroll, confirmed in `frame` unless output explains it
 let lastGrowthAt = 0 // when output last arrived: a row appeared or grew, or the stream got longer
 let promptAt = 0 // when the prompt box last changed height: edited, or a prompt sent
-let hasScrolled = false // since the last prompt: rain then keeps the lower half of the window readable
 let layoutDirtyAt = 0
 let settings = { reach: 'balanced' as Reach, glyphs: 'katakana' as GlyphSet, resumeMs: 5000 }
 
@@ -161,10 +159,9 @@ const sameRange = (a: OnScreen | null, b: OnScreen | null) =>
 /** True while a scroll happened within the resume delay. */
 const isScrolling = () => Date.now() - lastScrollAt < settings.resumeMs
 
-/** A scroll was seen: clear the rain now, and keep the lower half readable when it returns. */
+/** A scroll was seen: clear the rain now; it returns once scrolling has stopped. */
 function scrolled(at: number) {
   lastScrollAt = at
-  hasScrolled = true
 }
 
 /**
@@ -196,8 +193,6 @@ function measure(key: string, shown: OnScreen | null): Entry {
     layoutDirtyAt ||= now // a full pass soon, to settle where it goes
     if (entry === newest() && !isScrolling()) {
       lastGrowthAt = now
-      // A new prompt means the person is back at the live bottom, watching.
-      if (key.startsWith('UserMessage:')) hasScrolled = false
       // The finished reply has its own row now: stop raining on its stream,
       // and ramp its own rain in from where the stream's fade left off.
       if (key.startsWith('AssistantMessage:') && stream) {
@@ -303,48 +298,27 @@ function extentsOf(e: TranscriptInput, columns: number): Extent[] {
   }
 }
 
-/**
- * The window's height in lines: the estimate from the terminal's size, until a
- * run of rows cut off at both edges of the window measures it exactly.
- */
-let measuredRows: { rows: number; forViewport: number } | undefined
-
-function windowRows(viewportRows: number): number {
-  if (measuredRows?.forViewport === viewportRows) return measuredRows.rows
-  return Math.max(4, viewportRows - CHROME_ROWS)
-}
+/** The window's height in lines, from the terminal's size: the scale the decay is measured against. */
+const windowRows = (viewportRows: number) => Math.max(4, viewportRows - CHROME_ROWS)
 
 /**
  * Where a row sits: `base`, so that its line `r` is `base - r` lines above the
  * bottom of the window.
  *
- * It is counted along the run of rows on screen around it (`visibleRun`),
- * from whichever edge of the window that run is pinned to:
- *
- * - Cut off at the bottom of the window: up from its lowest line on screen.
- * - Otherwise, cut off at the top: down from the top of the window. Lines the
- *   engine draws but does not report (its own notices, the spinner) can sit
- *   below the last reported row, so the bottom is not to be trusted there.
- * - Cut off at neither (a conversation shorter than the window): up from its
- *   last line, the newest output, with any reply still streaming below added.
+ * Wherever the window is, this counts up from the lowest line on screen of
+ * the run of rows around it (`visibleRun`): at the live bottom that is the
+ * newest output, scrolled back it is the window's bottom edge. Nothing else
+ * goes in, so the same lines of the window decay the same way at any scroll
+ * position. The one addition is a reply still streaming below the newest row,
+ * whose lines sit between it and the prompt.
  */
-function baseOf(entry: Entry, shown: OnScreen, streamRows: number, viewportRows: number): number {
+function baseOf(entry: Entry, shown: OnScreen, streamRows: number): number {
   const run = visibleRun(entry)
-  const at = run.indexOf(entry)
-  const lines = (e: Entry) => (e.shown ? e.shown.last - e.shown.first + 1 : 0)
-  const top = run[0]!
-  const lowest = run[run.length - 1]!
-  const isTopCut = !!top.shown && top.shown.first > 0
-  if (isTopCut && isBottomClipped(lowest.shown)) {
-    measuredRows = { rows: run.reduce((n, e) => n + lines(e), 0), forViewport: viewportRows }
-  }
-  if (isTopCut && !isBottomClipped(lowest.shown)) {
-    let above = 0
-    for (const other of run.slice(0, at)) above += lines(other)
-    return windowRows(viewportRows) - 1 - above + shown.first
-  }
   let below = 0
-  for (const other of run.slice(at + 1)) below += lines(other)
+  for (const other of run.slice(run.indexOf(entry) + 1)) {
+    if (other.shown) below += other.shown.last - other.shown.first + 1
+  }
+  const lowest = run[run.length - 1]!
   const isAtLiveBottom = lowest === newest() && !isBottomClipped(lowest.shown)
   return shown.last + below + (isAtLiveBottom ? streamRows : 0)
 }
@@ -359,7 +333,7 @@ function overlaysFor(m: Mount, first: number, last: number, columns: number, pre
   const out: Overlay[] = []
   let blockEnd = first
   for (let r = first; r <= last; r++) {
-    const c = corruption(m.base - r, m.viewRows, m.curve) * m.ramp
+    const c = corruption(m.base - r, m.viewRows, settings.reach) * m.ramp
     if (c <= 0) break // lines only get closer to the bottom from here
     if (c >= BLOCK && r === blockEnd) {
       blockEnd = r + 1
@@ -391,7 +365,7 @@ function cellsOf(m: Mount, o: Overlay, t: number): string {
   for (let i = 0; i < o.rows; i++) {
     const r = o.row + i
     const d = m.base - r
-    const c = corruption(d, m.viewRows, m.curve) * m.ramp
+    const c = corruption(d, m.viewRows, settings.reach) * m.ramp
     const [start, end] = m.extents[r] ?? [0, 0]
     const rowId = hash(m.seed, r) * 1e6
     for (let j = 0; j < o.width; j++) {
@@ -447,7 +421,7 @@ const draw: Draw = async ($, e, next) => {
   const viewRows = windowRows(e.viewport.rows)
   // The streaming reply sits below the newest row; that row carries its rain.
   const streamExtents = stream && !stream.finishedAt ? markdownExtents(stream.text, columns) : []
-  const base = baseOf(entry, shown, streamExtents.length, e.viewport.rows)
+  const base = baseOf(entry, shown, streamExtents.length)
   const fade = streamFade(streamExtents.length, viewRows)
   if (stream && !stream.finishedAt) stream.fade = fade
   const isAnchor = entry === newest() && streamExtents.length > 0 && shown.last === shown.of - 1 && fade > 0
@@ -458,7 +432,6 @@ const draw: Draw = async ($, e, next) => {
     fadeFrom: shown.of,
     fade,
     viewRows,
-    curve: hasScrolled ? 'scrolled' : settings.reach,
     ramp: entry.arrivedAt
       ? entry.rampFrom + (1 - entry.rampFrom) * Math.min(1, (Date.now() - entry.arrivedAt) / RAMP_MS)
       : 1,
@@ -649,7 +622,6 @@ export const register: Register = (on, options) => {
     mounts.clear()
     lastScrollAt = 0
     maybeScrollAt = 0
-    hasScrolled = false
     stream = undefined
     finished = ''
     rampUntil = 0

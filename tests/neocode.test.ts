@@ -144,7 +144,7 @@ function mockSession(on: On) {
 const startSession = ($: Engine) => $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
 
 describe('interaction', () => {
-  test('a scroll clears the rain at once; it returns, softer, once scrolling stops', QUICK, async ($, on) => {
+  test('a scroll clears the rain at once; it returns once scrolling stops', QUICK, async ($, on) => {
     on('ui.render', () => ENGINE)
     const ui = await $.ui.mount({
       plugin: 'neocode',
@@ -167,12 +167,12 @@ describe('interaction', () => {
     await ui.redraw()
     expect(hasRaster(await ui.drawn())).toBe(false)
 
-    // Quiet for the whole delay: rain again, over the top of the window only.
+    // Quiet for the whole delay: rain again, as at the live bottom.
     await wait(600)
     await ui.redraw()
     const tree = JSON.stringify(await ui.drawn())
     expect(tree).toContain('"Raster"')
-    expect(tree).not.toContain('"top":17') // the lines nearest the window's bottom stay readable
+    expect(tree).not.toContain('"top":19') // the lines nearest the window's bottom stay readable
   })
 
   test('a streaming reply pushes the rows above it into the rain as it grows', async ($, on) => {
@@ -473,4 +473,103 @@ function glyphsTotal(tree: unknown): number {
   walk(tree)
   return n
 }
+
+describe('parity: rain after a scroll matches the live bottom (0.3.1)', () => {
+  // A reply of identical full-width code lines, so every line of the window
+  // holds the same text wherever the window is.
+  const LINE = 'a'.repeat(78)
+  const UNIFORM = { text: '```\n' + Array.from({ length: 95 }, () => LINE).join('\n') + '\n```', isFirstOfReply: true }
+  const WINDOW = 24 // VIEWPORT's 30 rows less the prompt and footer
+  const at = (first: number) => ({ first, last: first + WINDOW - 1, of: 96 })
+  const POSITIONS = { top: at(0), middle: at(40), bottom: at(72) }
+
+  // Rain per window line: how many cells it covers, and their summed greenness.
+  function rainByWindowLine(tree: unknown, first: number) {
+    const out = Array.from({ length: WINDOW }, () => ({ cells: 0, green: 0 }))
+    const walk = (node: any, top: number) => {
+      if (!node || typeof node !== 'object') return
+      if (node.type === 'Raster') {
+        const bytes = (Uint8Array as any).fromBase64(node.props.cells) as Uint8Array
+        const words = new Uint32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4)
+        for (let i = 0; i < node.props.rows; i++) {
+          const line = top + i - first
+          if (line < 0 || line >= WINDOW) continue
+          for (let j = 0; j < node.props.columns; j++) {
+            const at3 = (i * node.props.columns + j) * 3
+            if (words[at3] === 0x20) continue
+            const rgb = words[at3 + 1] ?? 0
+            out[line]!.cells++
+            // Greenness: how far the cell has gone from grey (scrambled text) to Matrix green.
+            out[line]!.green += ((rgb >> 8) & 0xff) - (((rgb >> 16) & 0xff) + (rgb & 0xff)) / 2
+          }
+        }
+      }
+      const childTop = node.props?.position === 'absolute' ? Number(node.props.top ?? 0) : top
+      for (const child of node.children ?? []) walk(child, childTop)
+    }
+    walk(tree, 0)
+    return out
+  }
+
+  // Compares two windows band by band (4 lines): the share of cells rained on,
+  // and how bright that rain is. Bites are seeded per line of text, so single
+  // lines vary a little between positions; bands even that out.
+  // Only window lines that hold a code line at both positions are compared
+  // (the reply's first line, row 0, is the blank above it).
+  function expectSameRain(live: ReturnType<typeof rainByWindowLine>, other: ReturnType<typeof rainByWindowLine>, where: string, first: number) {
+    const isCode = (line: number) => first + line >= 1
+    for (let band = 0; band < WINDOW; band += 4) {
+      const lines = [0, 1, 2, 3].map(i => band + i).filter(isCode)
+      if (lines.length === 0) continue
+      const sum = (w: typeof live) => lines.reduce((a, l) => ({ cells: a.cells + w[l]!.cells, green: a.green + w[l]!.green }), { cells: 0, green: 0 })
+      const a = sum(live)
+      const b = sum(other)
+      const share = (x: number) => x / (lines.length * 80)
+      expect({ where, band, diff: Math.abs(share(a.cells) - share(b.cells)) < 0.12 }).toEqual({ where, band, diff: true })
+      if (a.cells > 40 && b.cells > 40) {
+        const brightness = Math.abs(a.green / a.cells - b.green / b.cells)
+        expect({ where, band, bright: brightness < 30 }).toEqual({ where, band, bright: true })
+      }
+    }
+    // Lines with no rain at the live bottom have none here either, and fully rained lines stay full.
+    for (let line = 0; line < WINDOW; line++) {
+      if (!isCode(line)) continue
+      if (live[line]!.cells === 0) expect({ where, line, cells: other[line]!.cells }).toEqual({ where, line, cells: 0 })
+      if (live[line]!.cells >= 77.5) expect({ where, line, full: other[line]!.cells >= 77.5 }).toEqual({ where, line, full: true })
+    }
+  }
+
+  for (const reach of ['gentle', 'balanced', 'deep'] as const) {
+    test(`${reach}: top, middle and bottom after a scroll look like the live bottom`, { options: { resumeDelay: 1, reach }, timeoutMs: 25000 }, async ($, on) => {
+      on('ui.render', () => ENGINE)
+      const ui = await $.ui.mount({
+        plugin: 'neocode', surface: 'terminal', component: 'AssistantMessage', requestId: 'uniform',
+        props: { ...UNIFORM, onScreen: POSITIONS.bottom }, viewport: VIEWPORT,
+      })
+      // The rain animates, so each position is sampled over a second and summed.
+      const sample = async (first: number) => {
+        const total = Array.from({ length: WINDOW }, () => ({ cells: 0, green: 0 }))
+        for (let i = 0; i < 6; i++) {
+          if (i) await wait(200)
+          await ui.redraw()
+          rainByWindowLine(await ui.drawn(), first).forEach((l, line) => {
+            total[line]!.cells += l.cells / 6
+            total[line]!.green += l.green / 6
+          })
+        }
+        return total
+      }
+      const live = await sample(POSITIONS.bottom.first)
+      expect(live.some(l => l.cells > 0)).toBe(true)
+      await wait(500)
+      for (const [where, onScreen] of [['top', POSITIONS.top], ['middle', POSITIONS.middle], ['bottom', POSITIONS.bottom]] as const) {
+        // Scroll there (the rain clears), then wait out the resume delay.
+        await ui.redraw({ ...UNIFORM, onScreen: { ...onScreen, last: onScreen.last - 1 } })
+        await ui.redraw({ ...UNIFORM, onScreen })
+        await wait(1150)
+        expectSameRain(live, await sample(onScreen.first), where, onScreen.first)
+      }
+    })
+  }
+})
 

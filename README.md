@@ -12,6 +12,13 @@ It is purely cosmetic. Scroll or select text and the rain clears at once so you 
      ─────────────────────────────────────────────────────────────────────────── -->
 > 📸 **Screenshot / GIF goes here.**
 
+## Where it works
+
+- **A terminal running `claude` in the fullscreen renderer** (`/tui fullscreen`). That includes the integrated terminal in VS Code or Cursor. It has been tested in tmux, iTerm2 and macOS Terminal on macOS. Other terminals, Linux and Windows haven't been tested.
+- **The VS Code extension's chat panel:** mods run their hooks there but draw no interface, so neocode shows nothing.
+- **The Desktop app's Code tab:** untested. It may not draw neocode's overlay.
+- **Desktop WSL sessions:** plugins aren't available there.
+
 ## Requirements
 
 - **Claude Code 2.1.287 or later**, the first release with mods.
@@ -52,8 +59,8 @@ The toggle runs immediately, even while Claude is mid-turn, and is remembered ac
 
 You can't read decayed code, so neocode steps aside whenever you're interacting with the transcript, and comes back by itself once you stop. The wait is the **Resume after** option, 5 seconds by default.
 
-- **Scrolling.** Every scroll, by mouse wheel or keyboard (PgUp, PgDn, Ctrl+Home, Ctrl+End), clears the rain from the whole screen at once. Once you've gone the full delay without scrolling, it returns in the same pattern wherever you are, including back at the bottom: the upper half of the window turns to rain and the lower half stays fully readable. The usual decay comes back with your next prompt.
-- **Selecting text.** Selecting with the mouse clears the rain, so what you select is the real text. Once the selection has stopped changing for the full delay, the rain returns everywhere except the transcript row you selected in. That row stays clean while the selection might still be highlighted, so copying it later with Ctrl+C, Ctrl+Shift+C or Cmd+C also gets the real text.
+- **Scrolling.** Every scroll, by mouse wheel or keyboard (PgUp, PgDn, Ctrl+Home, Ctrl+End), clears the rain from the whole screen at once. Once you've gone the full delay without scrolling, it returns exactly as it looks at the live bottom, wherever you've scrolled to. Decay is measured up from the bottom edge of the window, using your **Reach** setting.
+- **Selecting text.** Selecting with the mouse clears the rain, so what you select is the real text. Under the fullscreen renderer Claude Code captures the mouse, so the selection is Claude Code's own, not the terminal's (in macOS Terminal, Edit > Copy is greyed out). The text is copied when you release the mouse, and again with Ctrl+Shift+C (tested in tmux). Once the selection has stopped changing for the full delay, the rain returns everywhere except the transcript row you selected in. That row stays clean while the selection might still be highlighted, so a later copy also gets the real text.
   - Typing anything in the prompt box clears the highlight, and the rain returns over that row too.
   - Claude Code doesn't tell mods when a click elsewhere clears the highlight. After a click, the row stays clean until you type, send a prompt or run a command.
   - A selection spanning several rows doesn't say which rows it covers, so the rain stays off until you type, send a prompt or run a command.
@@ -82,7 +89,7 @@ If you've turned on **Reduce motion** in `/config`, neocode starts off. You can 
 
 Claude Code draws every transcript row as usual. neocode's `ui.render` hook wraps each row's drawing and lays [`Raster`](https://code.claude.com/docs/en/plugins/mods/reference.md) cell grids over the parts that should look decayed, positioned absolutely so nothing underneath moves:
 
-1. **Distance from the prompt.** Each row reports how tall it is and which of its lines are visible. Stacking those heights gives every line's distance above the bottom of the window, and that distance sets how decayed the line is. At the live bottom the count runs up from the newest output; when you're scrolled back it runs down from the row at the top of the window.
+1. **Distance from the bottom of the window.** Each row reports how tall it is and which of its lines are visible. neocode counts up from the lowest line on screen to give every line its distance above the bottom of the window. At the live bottom that lowest line is the newest output. That distance, against your **Reach** setting, sets how decayed the line is. The same rule applies at every scroll position, so a given line of the window decays the same way wherever you are.
 2. **Decay, bite by bite.** In the transition band, a line's text is cut into short segments that each corrupt once the decay passes their own fixed threshold, so the corruption eats into the code instead of flickering at random. Near the top, whole lines are covered with rain.
 3. **Animation without re-rendering.** A timer repaints the mounted grids with `$.ui.blit`, which only changes cells. The rain is computed from position and time alone, so there's no per-cell state to track.
 
@@ -115,7 +122,7 @@ Mods run unsandboxed with your permissions, so here is everything neocode does:
 
   It hooks nothing that changes conversation data: no `session.append`, `tool.call` or `prompt.submit`.
 - **Never changes what the model sees, what the transcript stores, or what gets written to files.** It doesn't rewrite any props. It draws on top of the engine's own drawing.
-- **Clipboard.** Claude Code copies a mouse selection from what's on screen, both when you release the mouse and when you press a copy key later. So neocode removes the rain while you select, and never puts it back over the row you selected in while that selection exists. If a selection is made faster than one animation frame (a double-click on a word, for example), the copy on release can catch glyphs. When that happens, neocode re-copies the same selection once the rain is gone, so the clipboard ends up holding the real text you selected.
+- **Clipboard.** Claude Code copies its mouse selection from what's on screen, both when you release the mouse and when you copy again later (Ctrl+Shift+C, tested in tmux). So neocode removes the rain while you select, and never puts it back over the row you selected in while that selection exists. If a selection is made faster than one animation frame (a double-click on a word, for example), the copy on release can catch glyphs. When that happens, neocode re-copies the same selection once the rain is gone, so the clipboard ends up holding the real text you selected.
 - **Storage:** two flags in its own plugin store: your `/neocode` choice, and whether the fullscreen hint has been shown.
 - **Settings:** reads one setting, `prefersReducedMotion`.
 - **No** network access, processes, file reads or writes, dependencies, install scripts or build step. The source is the TypeScript you see here.
@@ -129,7 +136,9 @@ Run `claude plugin validate --strict .claude-plugin/plugin.json` in a clone to s
 - **Text positions are estimates.** A mod is told how tall each row is, but not what's in it. neocode estimates where text sits from the row's content (markdown, tool input or output), so in the transition band a bite occasionally lands on whitespace. Higher up, everything is rain anyway.
 - **A reply still streaming isn't fully reachable.** Claude Code paints streaming text over anything a mod lays on it, and it stops drawing the row above once that row scrolls off. So a reply's own text decays only once it completes. Until then you get rain around its lines, which fades out as the reply nears the window's height. A reply taller than the window streams plain until it's done. See [While Claude is still writing](#while-claude-is-still-writing).
 - **A selection keeps its row clean until you type, send a prompt or run a command,** because Claude Code tells mods nothing when a click clears it. A multi-row selection keeps all the rain paused that long, because no API says which rows it covers.
-- **Rows the engine doesn't report**, such as the welcome banner and the live spinner, are left as they are.
+- **Native selection can copy rain.** If mouse capture is off (`CLAUDE_CODE_DISABLE_MOUSE=1`, or a terminal's key for bypassing mouse reporting), selection is the terminal's own. neocode can't see it, so text copied from the screen may contain rain glyphs. In tmux with mouse capture off, a copy made with tmux's own selection contained the glyphs, and after `/neocode off` the same copy was clean. Run `/neocode off` before copying that way. Native selection in iTerm2 and macOS Terminal hasn't been tested.
+- **Scroll detection is inferred** from which rows are visible, so an unusual layout change can briefly pause the rain.
+- **Rows the engine doesn't report**, such as the welcome banner, the live spinner and Claude Code's own notices, are left as they are. At the live bottom such rows below the newest output lift the point decay is measured from by their height.
 - **Glyph width.** Half-width katakana are one cell wide in standard terminal fonts. A font that draws them wide will misalign the rain; use `letters`.
 - **Light themes.** The palette is tuned for dark backgrounds.
 - **Cost.** With a full screen of rain at 15 fps, expect about 10–20% of one CPU core while the effect runs, and close to nothing when it's off or paused.
@@ -145,6 +154,22 @@ claude plugin validate --strict .claude-plugin/plugin.json
 Bump `version` in `.claude-plugin/plugin.json` for every release: `claude plugin update` only fetches a version it hasn't installed.
 
 Claude Code writes its API declarations into `.claude-plugin/types/` the first time it loads the folder. After that, `npx -p typescript tsc -p .` type-checks the mod.
+
+## Contributing
+
+Contributions are welcome, especially fixes for the known limitations: live rain while a reply streams, a palette for light themes, other terminals and environments, and the Desktop app's Code tab. For bigger changes, please open an issue first.
+
+```sh
+claude --plugin-dir . --settings '{"tui":"fullscreen"}'   # run it from a clone; edits hot-reload
+claude plugin test .                                      # tests in tests/
+claude plugin validate --strict .claude-plugin/plugin.json
+```
+
+Add or update tests with any change in behaviour. Every change must keep these:
+- **Display-only:** nothing changes what the model sees, what the transcript stores, or what gets written to files.
+- **The clipboard guarantee:** selected text always copies as the real text, never rain glyphs.
+- **No network access or install scripts.**
+- **Readable, auditable code.**
 
 ## License
 

@@ -84,10 +84,12 @@ Open `/config` and look for the rows marked `· neocode`:
 | Option | Default | What it does |
 | --- | --- | --- |
 | Rain on at start | `true` | Whether the effect starts on. Your last `/neocode` choice overrides this. |
-| Reach | `balanced` | How far down the screen the decay reaches: `gentle` (top half only), `balanced`, or `deep` (almost to the prompt). |
-| Glyphs | `katakana` | `katakana` for the authentic Matrix glyphs. `letters` uses ASCII only, for fonts without half-width katakana. |
+| Reach | `balanced` | How far down the screen the decay reaches. Type `gentle` (top half only), `balanced`, or `deep` (almost to the prompt). |
+| Glyphs | `katakana` | Type `katakana` for the authentic Matrix glyphs, or `letters` for ASCII only, for fonts without half-width katakana. |
 | Resume after (seconds) | `5` | How long the rain waits after your last scroll or selection before coming back, 1 to 60. |
 | Frames per second | `15` | Animation rate, 5 to 30. Lower it if your terminal struggles. |
+
+**Reach** and **Glyphs** are typed, not picked from a list. Capitals and surrounding spaces don't matter (` Deep ` works), and anything else falls back to the default.
 
 If you've turned on **Reduce motion** in `/config`, neocode starts off. You can still turn it on with `/neocode on`.
 
@@ -118,7 +120,19 @@ All the maths lives in [`hooks/matrix.ts`](hooks/matrix.ts), which has no I/O. T
 
 ## Display-only, and what the code touches
 
-Mods run unsandboxed with your permissions, so here is everything neocode does:
+Mods run unsandboxed with your permissions, so here is everything neocode does.
+
+### What it sends and where
+
+**neocode sends nothing off your machine.** It makes no network requests, and nothing it reads goes to Claude, to a file, or to another program.
+
+- **One call passes data on:** `$.ui.copy`, which writes to your local clipboard. neocode reads your current mouse selection (`$.ui.selection`) to watch for one case. A selection made faster than one animation frame, such as a double-click on a word, can be copied while rain glyphs are still on screen. When that happens, neocode re-copies your own selection, as it really reads, so the clipboard ends up holding the real text. It never copies anything else.
+- **`turn.complete`** reads only whether the turn belongs to a subagent. It reads no conversation text, and passes the event on untouched.
+- **`$.settings.read`** is used only to read `prefersReducedMotion`, so neocode can start off for anyone who has asked Claude Code to reduce motion.
+- **The `command.run` hook runs only for `/neocode`.** It answers it with a toast, and never reads or changes any other command or any permission decision.
+- Everything else it writes stays inside Claude Code's own display and storage: the rain it draws, two toasts, and two on/off flags.
+
+### Everything it touches
 
 - **Hooks:**
   - `ui.render` on transcript rows, to draw the overlay.

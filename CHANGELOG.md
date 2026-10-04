@@ -1,13 +1,22 @@
 # Changelog
 
+## 0.3.5 (2026-10-04)
+
+Fixes for the directory portal's validation findings. One behaviour change: how **Reach** and **Glyphs** read what you type.
+
+- **Reach and Glyphs are typed now, not picked from a list.** The directory doesn't accept the `options` key on a `userConfig` field yet (finding `USERCONFIG_OPTION_INVALID`), so the dropdown is gone for that reason only. Both fields now take free text. Capitals and surrounding spaces don't matter (` Deep ` works), and anything unrecognised falls back to the default (balanced, katakana), as before. The descriptions in `/config` and the README list the accepted values. A new test checks typed values draw exactly as the exact ones do.
+- **Disclosure** (findings `MOD_LOCAL_DATA_LEAVES` and `MOD_SESSION_DATA_LEAVES`): a new README section, "What it sends and where". It names the one call that passes data on (`$.ui.copy`, re-copying your own selection to your local clipboard), and says that `turn.complete` reads only whether a turn is a subagent's and that the settings call is used only for `prefersReducedMotion`. `PRIVACY.md` says the same.
+- **The `/neocode` command hook** (finding `MOD_ANSWERS_PERMISSION`) now spells out in code that it passes any command other than `/neocode` on untouched. Its matcher already limits it to `/neocode`, so what it does is unchanged. Variables in `hooks/register.tsx` that shared a name with a hook's event parameter (`e`) are renamed.
+- **No image paths in text files** (finding `UNREAD_ASSET_REFERENCED`): the CHANGELOG no longer names the icon's file, and `.gitignore` ignores Photoshop files without naming a path. The manifest's `icon` field still points to the icon.
+
 ## 0.3.4 (2026-10-04)
 
 No change in behaviour. Directory listing metadata, a privacy policy and a fixed donation link.
 
-- **Listing fields** in `plugin.json`: `icon` (`assets/neocode_icon_1024.png`, a 1024 px PNG), `documentationUrl`, `supportUrl` and `privacyPolicyUrl`.
+- **Listing fields** in `plugin.json`: the listing icon (a 1024 px PNG), `documentationUrl`, `supportUrl` and `privacyPolicyUrl`.
 - **`PRIVACY.md`:** a one-page privacy policy, linked from the README. neocode sends nothing anywhere and collects nothing.
 - **Fixed: the Buy Me a Coffee button.** The embed script was committed to the README, and GitHub doesn't run scripts, so it showed nothing. It is replaced by a Markdown link with a badge, placed under the screenshots, and there's a `.github/FUNDING.yml` for GitHub's Sponsor button. The plugin's code, toasts and manifest description say nothing about donations.
-- `.gitignore` now excludes `assets/*.psd`, the icon's Photoshop source (6.8 MB, and not a file type the directory accepts).
+- `.gitignore` now excludes Photoshop files, such as the icon's source (6.8 MB, and not a file type the directory accepts).
 
 ## 0.3.3 (2026-10-04)
 

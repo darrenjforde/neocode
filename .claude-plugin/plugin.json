@@ -1,7 +1,7 @@
 {
   "name": "neocode",
   "displayName": "neocode",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "Matrix-style ambience for Claude Code: code decays into upward-streaming digital rain as it scrolls toward the top of the screen. Display-only: reads on-screen text and your selection in memory only, never changes the transcript, and uses no network, files or processes. Scrolling or selecting clears the rain until you pause; /neocode toggles it.",
   "author": {
     "name": "Darren Forde",
@@ -26,16 +26,14 @@
     "reach": {
       "type": "string",
       "title": "Reach",
-      "description": "How far down the screen the decay reaches: gentle, balanced or deep.",
-      "default": "balanced",
-      "options": ["gentle", "balanced", "deep"]
+      "description": "How far down the screen the decay reaches. Type gentle, balanced or deep. Anything else falls back to balanced.",
+      "default": "balanced"
     },
     "glyphs": {
       "type": "string",
       "title": "Glyphs",
-      "description": "katakana: authentic Matrix glyphs. letters: ASCII only, for fonts without half-width katakana.",
-      "default": "katakana",
-      "options": ["katakana", "letters"]
+      "description": "Type katakana for the authentic Matrix glyphs, or letters for ASCII only, for fonts without half-width katakana. Anything else falls back to katakana.",
+      "default": "katakana"
     },
     "resumeDelay": {
       "type": "number",

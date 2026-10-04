@@ -288,3 +288,12 @@ export function paint(
   const level = isHead ? 1 : isText ? 0.3 + 0.2 * c + 0.5 * trail : 0.12 + 0.8 * trail
   return { glyph: pick(matrix, h), color: green(nearWave ? Math.max(level, 0.85) : level) }
 }
+
+/**
+ * A free-text option as one of `values`: case and surrounding whitespace are
+ * ignored, and anything unrecognised (or missing) is `fallback`.
+ */
+export function pickOption<T extends string>(value: unknown, values: readonly T[], fallback: T): T {
+  const text = typeof value === 'string' ? value.trim().toLowerCase() : ''
+  return values.find(v => v === text) ?? fallback
+}

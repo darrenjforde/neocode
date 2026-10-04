@@ -27,7 +27,9 @@
 // What it touches, all of it.
 //
 // Hooks. `ui.render` draws the overlay; `session.start` and `session.end` set
-// up and reset; `command.run` answers /neocode. Three more are only observed:
+// up and reset; `command.run` runs for /neocode only (its matcher) and answers
+// it with a toast, never another command or a permission decision. Three more
+// are only observed:
 // each passes the event, and the engine's answer, on exactly as received.
 //   - `classic.MessageDisplay`: reads the streamed reply's display lines, to
 //     size the rain over them.
@@ -73,6 +75,7 @@ import {
   markdownExtents,
   paint,
   paintGap,
+  pickOption,
   plainExtents,
   seedOf,
   streamCorruption,
@@ -349,7 +352,7 @@ function place(entry: Entry, now: number) {
  * test, so it cannot pull the window off.
  */
 function visibleRun(seed: Entry): Entry[] {
-  const all = order.filter(e => !e.isGone || e === seed)
+  const all = order.filter(entry => !entry.isGone || entry === seed)
   let top = all.indexOf(seed)
   let bottom = top
   while (top > 0) {
@@ -368,18 +371,18 @@ function visibleRun(seed: Entry): Entry[] {
 }
 
 /** Roughly where a row's text sits, line by line (see matrix.ts). */
-function extentsOf(e: TranscriptInput, columns: number): Extent[] {
-  switch (e.component) {
+function extentsOf(input: TranscriptInput, columns: number): Extent[] {
+  switch (input.component) {
     case 'AssistantMessage':
-      return markdownExtents(e.props.text, columns)
+      return markdownExtents(input.props.text, columns)
     case 'UserMessage':
     case 'CommandOutput':
     case 'InfoNotice':
-      return plainExtents('', e.props.text, columns, 2)
+      return plainExtents('', input.props.text, columns, 2)
     case 'ToolUse':
-      return plainExtents(`  ${e.props.tool}()`, longestText(e.props.input), columns)
+      return plainExtents(`  ${input.props.tool}()`, longestText(input.props.input), columns)
     case 'ToolResult':
-      return plainExtents('', longestText(e.props.output), columns)
+      return plainExtents('', longestText(input.props.output), columns)
     default:
       return plainExtents(' '.repeat(36), '', columns)
   }
@@ -421,7 +424,7 @@ function baseOf(entry: Entry, shown: OnScreen, streamRows: number): number {
 function linesAboveStream(anchor: Entry, viewRows: number, streamRows: number): number {
   const run = visibleRun(anchor)
   let lines = 0
-  for (const e of run) if (e.shown) lines += e.shown.last - e.shown.first + 1
+  for (const entry of run) if (entry.shown) lines += entry.shown.last - entry.shown.first + 1
   const isTopCut = (run[0]!.shown?.first ?? 0) > 0
   return isTopCut ? lines : Math.max(lines, viewRows - streamRows)
 }
@@ -719,8 +722,10 @@ async function syncPaused($: EngineInterface) {
 
 export const register: Register = (on, options) => {
   settings = {
-    reach: (['gentle', 'balanced', 'deep'].includes(String(options.reach)) ? options.reach : 'balanced') as Reach,
-    glyphs: (options.glyphs === 'letters' ? 'letters' : 'katakana') as GlyphSet,
+    // Free-text options: case and surrounding spaces don't matter, and
+    // anything unrecognised falls back to the default.
+    reach: pickOption(options.reach, ['gentle', 'balanced', 'deep'] as const, 'balanced'),
+    glyphs: pickOption(options.glyphs, ['katakana', 'letters'] as const, 'katakana'),
     resumeMs: Math.max(1, Math.min(60, Number(options.resumeDelay) || 5)) * 1000,
   }
   const fps = Math.max(5, Math.min(30, Number(options.fps) || 15))
@@ -803,8 +808,12 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // Answers with a toast and no `text`, so the toggle adds no transcript row.
-  on('command.run', { command: 'neocode' }, async ($, e) => {
+  // Runs for /neocode only (the matcher), and answers it with a toast and no
+  // `text`, so the toggle adds no transcript row. It never sees another
+  // command or any permission decision; the first line only spells that out,
+  // passing anything that isn't /neocode on untouched.
+  on('command.run', { command: 'neocode' }, async ($, e, next) => {
+    if (e.command !== 'neocode') return next(e)
     const arg = e.args.trim().toLowerCase()
     const was = await read($, enabled)
     const isOn = arg === 'on' ? true : arg === 'off' ? false : arg === 'status' ? was : !was

@@ -3,7 +3,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 
-import { BLOCK, bites, corruption, markdownExtents, paint, streamFade } from '../hooks/matrix'
+import { BLOCK, bites, corruption, markdownExtents, paint, pickOption, streamFade } from '../hooks/matrix'
 
 const REPLY = {
   text: '```python\nfor cell in grid:\n    print(cell)\n```\nDone.',
@@ -777,5 +777,77 @@ describe('display-only: what the code touches (0.3.3)', () => {
     expect(stored).toEqual({ enabled: true, fullscreenHinted: true })
     // The one clipboard write is the person's own selection, as it really reads.
     expect(copies).toEqual(['for cell in grid:'])
+  })
+})
+
+// Reach and Glyphs are free text in /config (the directory doesn't accept a
+// fixed list of options yet), so a typed value is read case-insensitively and
+// trimmed, and anything else is the default.
+describe('typed options (0.3.5)', () => {
+  test('a typed value is matched without regard to case or surrounding spaces; anything else is the default', () => {
+    const REACH = ['gentle', 'balanced', 'deep'] as const
+    expect(pickOption('deep', REACH, 'balanced')).toBe('deep')
+    expect(pickOption('Deep', REACH, 'balanced')).toBe('deep')
+    expect(pickOption(' deep ', REACH, 'balanced')).toBe('deep')
+    expect(pickOption('\tGENTLE\n', REACH, 'balanced')).toBe('gentle')
+    for (const other of ['', '  ', 'deeper', 'de ep', 'medium', undefined, null, 3, true, ['deep']]) {
+      expect(pickOption(other, REACH, 'balanced')).toBe('balanced')
+    }
+    expect(pickOption(' Letters ', ['katakana', 'letters'] as const, 'katakana')).toBe('letters')
+    expect(pickOption('kana', ['katakana', 'letters'] as const, 'katakana')).toBe('katakana')
+  })
+
+  // The same reply drawn under each option value: how far down the rain
+  // reaches (the lowest line with any), and whether any glyph is katakana.
+  const LINE = 'a'.repeat(78)
+  const TALL = { text: '```\n' + Array.from({ length: 95 }, () => LINE).join('\n') + '\n```', isFirstOfReply: true }
+  const look = (tree: unknown) => {
+    let lowest = -1
+    let isKatakana = false
+    const walk = (node: any, top: number) => {
+      if (!node || typeof node !== 'object') return
+      if (node.type === 'Raster') {
+        const bytes = (Uint8Array as any).fromBase64(node.props.cells) as Uint8Array
+        const words = new Uint32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4)
+        for (let i = 0; i < node.props.rows; i++) {
+          for (let j = 0; j < node.props.columns; j++) {
+            const glyph = words[(i * node.props.columns + j) * 3]!
+            if (glyph === 0x20) continue
+            lowest = Math.max(lowest, top + i)
+            if (glyph >= 0xff61 && glyph <= 0xff9f) isKatakana = true
+          }
+        }
+      }
+      const childTop = node.props?.position === 'absolute' ? Number(node.props.top ?? 0) : top
+      for (const child of node.children ?? []) walk(child, childTop)
+    }
+    walk(tree, 0)
+    return { lowest, isKatakana }
+  }
+  const seen = new Map<string, ReturnType<typeof look>>()
+  const cases: [string, { reach: string; glyphs: string }][] = [
+    ['deep', { reach: 'deep', glyphs: 'letters' }],
+    ['typed', { reach: ' Deep ', glyphs: ' LETTERS ' }],
+    ['balanced', { reach: 'balanced', glyphs: 'katakana' }],
+    ['unknown', { reach: 'medium', glyphs: 'runes' }],
+  ]
+  for (const [name, options] of cases) {
+    test(`draws with reach ${JSON.stringify(options.reach)} and glyphs ${JSON.stringify(options.glyphs)}`, { options }, async ($, on) => {
+      on('ui.render', () => ENGINE)
+      const reply = await $.ui.mount({
+        plugin: 'neocode', surface: 'terminal', component: 'AssistantMessage', requestId: 'r',
+        props: { ...TALL, onScreen: { first: 72, last: 95, of: 96 } }, viewport: VIEWPORT,
+      })
+      seen.set(name, look(await reply.drawn()))
+    })
+  }
+  test('a typed " Deep " and " LETTERS " draw as deep and letters; unknown values draw as the defaults', () => {
+    expect(seen.size).toBe(4)
+    expect(seen.get('typed')).toEqual(seen.get('deep'))
+    expect(seen.get('typed')!.isKatakana).toBe(false)
+    expect(seen.get('unknown')).toEqual(seen.get('balanced'))
+    expect(seen.get('unknown')!.isKatakana).toBe(true)
+    // deep reaches further down the window than balanced does
+    expect(seen.get('deep')!.lowest).toBeGreaterThan(seen.get('balanced')!.lowest)
   })
 })

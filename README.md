@@ -9,14 +9,15 @@ It is purely cosmetic. Scroll or select text and the rain clears at once so you 
 <img width="1490" height="1057" alt="Screenshot 2026-10-04 at 17 43 24" src="https://github.com/user-attachments/assets/c7fa2a75-e7e9-48bd-8251-56f96e93dba8" />
 <img width="1431" height="1195" alt="Screenshot 2026-10-04 at 17 47 11" src="https://github.com/user-attachments/assets/164fe521-e9d5-4932-bd08-00671586a4db" />
 
+If you like neocode, you can help support it by buying me a coffee:
+[![Buy me a coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/darrenjforde)
+
 ## Where it works
 
 - **A terminal running `claude` in the fullscreen renderer** (`/tui fullscreen`). That includes the integrated terminal in VS Code or Cursor. It has been tested in tmux, iTerm2 and macOS Terminal on macOS. The checks behind the 0.3 releases (streaming, clipboard and scroll behaviour) were run in tmux. Other terminals, Linux and Windows haven't been tested.
 - **The VS Code extension's chat panel:** mods run their hooks there but draw no interface, so neocode shows nothing.
 - **The Desktop app's Code tab:** untested. It may not draw neocode's overlay.
 - **Desktop WSL sessions:** plugins aren't available there.
-
-<script type="text/javascript" src="https://cdnjs.buymeacoffee.com/1.0.0/button.prod.min.js" data-name="bmc-button" data-slug="darrenjforde" data-color="#FFDD00" data-emoji="☕" data-font="Cookie" data-text="Buy me a coffee" data-outline-color="#000000" data-font-color="#000000" data-coffee-color="#ffffff" ></script>
 
 ## Requirements
 
@@ -140,6 +141,8 @@ Mods run unsandboxed with your permissions, so here is everything neocode does:
 - **Storage:** two flags in its own plugin store: your `/neocode` choice, and whether the fullscreen hint has been shown. A test checks that nothing else is written.
 - **Other calls:** toasts (the `/neocode` answer and the one-time fullscreen hint), registering the `/neocode` command, timers for the animation, and `$.ui.blit` on its own rain grids.
 - **No** network access, processes, file reads or writes, dependencies, install scripts or build step. The source is the TypeScript you see here.
+
+The same information is set out as a short [privacy policy](PRIVACY.md): neocode sends nothing anywhere and collects nothing.
 
 Run `claude plugin validate --strict .claude-plugin/plugin.json` in a clone to see the engine's own list of what the module hooks and calls.
 

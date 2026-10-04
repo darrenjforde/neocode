@@ -7,3 +7,6 @@
 
 node_modules/
 .DS_Store
+
+# Photoshop source of the icon: large, and not a file the directory accepts.
+assets/*.psd

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.4 (2026-10-04)
+
+No change in behaviour. Directory listing metadata, a privacy policy and a fixed donation link.
+
+- **Listing fields** in `plugin.json`: `icon` (`assets/neocode_icon_1024.png`, a 1024 px PNG), `documentationUrl`, `supportUrl` and `privacyPolicyUrl`.
+- **`PRIVACY.md`:** a one-page privacy policy, linked from the README. neocode sends nothing anywhere and collects nothing.
+- **Fixed: the Buy Me a Coffee button.** The embed script was committed to the README, and GitHub doesn't run scripts, so it showed nothing. It is replaced by a Markdown link with a badge, placed under the screenshots, and there's a `.github/FUNDING.yml` for GitHub's Sponsor button. The plugin's code, toasts and manifest description say nothing about donations.
+- `.gitignore` now excludes `assets/*.psd`, the icon's Photoshop source (6.8 MB, and not a file type the directory accepts).
+
 ## 0.3.3 (2026-10-04)
 
 No change in behaviour. Preparation for submitting to the Claude plugin directory: what the code touches, and what the docs say about it, now agree.

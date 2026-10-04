@@ -1,7 +1,7 @@
 {
   "name": "neocode",
   "displayName": "neocode",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Matrix-style ambience for Claude Code: code decays into upward-streaming digital rain as it scrolls toward the top of the screen. Display-only: reads on-screen text and your selection in memory only, never changes the transcript, and uses no network, files or processes. Scrolling or selecting clears the rain until you pause; /neocode toggles it.",
   "author": {
     "name": "Darren Forde",
@@ -10,6 +10,10 @@
   "homepage": "https://github.com/darrenjforde/neocode",
   "repository": "https://github.com/darrenjforde/neocode",
   "license": "MIT",
+  "icon": "./assets/neocode_icon_1024.png",
+  "documentationUrl": "https://github.com/darrenjforde/neocode#readme",
+  "supportUrl": "https://github.com/darrenjforde/neocode/issues",
+  "privacyPolicyUrl": "https://github.com/darrenjforde/neocode/blob/main/PRIVACY.md",
   "keywords": ["matrix", "digital-rain", "ambience", "mod", "terminal", "animation", "theme", "fun"],
   "types": "./types/index.d.ts",
   "userConfig": {

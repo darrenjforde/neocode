@@ -181,18 +181,45 @@ const PALE = 0xc6cfc6
 // --- the rain -------------------------------------------------------------------
 
 /**
- * How much of the rain over a streaming reply to keep, 1 to 0, from the
- * reply's height so far against the window's. The rain over a stream hangs
- * from the row above it, which the engine stops drawing once the reply pushes
- * it off the top (at about the window's height); this thins the rain out over
- * the last stretch before that, ending a little early to allow for the
- * reply's height being an estimate.
+ * How decayed a line of a reply still streaming is, 0 to 1, from its distance
+ * above the newest streamed line. The engine draws streamed text over any
+ * rain, so rain shows only in the gaps around the lines, and it can start
+ * twice as soon as on finished rows without hiding anything: the Reach's
+ * distances, halved.
  */
-export function streamFade(streamRows: number, windowRows: number): number {
-  const x = (0.92 * windowRows - streamRows) / (0.22 * windowRows)
+export function streamCorruption(distance: number, viewRows: number, reach: Reach): number {
+  return corruption(distance * 2, viewRows, reach)
+}
+
+/**
+ * How much of the rain over a streaming reply to keep, 1 to 0. That rain hangs
+ * from the row just above the reply, which the engine stops drawing once the
+ * reply pushes it off the top of the window. `remaining` is how many lines
+ * that row and the rows above it still have on screen; the rain thins out
+ * over the last 30% of the window's height of them, and is gone a line
+ * before the row leaves.
+ */
+export function streamFade(remaining: number, windowRows: number): number {
+  const x = (remaining - 1) / Math.max(1, 0.3 * windowRows)
   if (x <= 0) return 0
   if (x >= 1) return 1
   return x * x * (3 - 2 * x)
+}
+
+/**
+ * A cell in the gaps around a streaming reply's lines: the climbing trails of
+ * full rain, kept where a stable per-cell threshold falls under `c` (0 to 1),
+ * so the trails thicken as a line rises and thin out evenly as `c` falls.
+ */
+export function paintGap(x: number, row: number, d: number, c: number, t: number, wave: number, glyphs: GlyphSet): Cell | null {
+  const trail = rain(x, d, t)
+  if (trail <= 0 || hash(x, row, 8) >= c) return null
+  const isHead = trail > 0.93
+  const nearWave = Math.abs(d - wave) < 1.5
+  const epoch = isHead || nearWave ? Math.floor(t * 30) : Math.floor(t * (0.6 + 5 * hash(x, row, 5)) + hash(x, row, 6) * 10)
+  const level = isHead ? 1 : 0.12 + 0.8 * trail
+  const glyph = pick(glyphs === 'letters' ? LETTERS : MATRIX, hash(x * 131 + row, epoch, 9))
+  return { glyph, color: green(nearWave ? Math.max(level, 0.85) : level) }
 }
 
 /** Where the upward ripple is now, in rows above the prompt. */
@@ -223,7 +250,6 @@ function pick(set: readonly number[], h: number): number {
  * The cell at screen column `x` of a row: `row` is a stable id for the row
  * (so each cell keeps its own rhythm), `d` its distance above the prompt, `c`
  * its corruption, `isText` whether the code has a character there.
- * `density` (0 to 1) thins the rain out evenly, cell by cell, for a fade.
  *
  * Returns `null` for a cell the overlay leaves blank (rain-free empty space).
  */
@@ -236,10 +262,7 @@ export function paint(
   t: number,
   wave: number,
   glyphs: GlyphSet,
-  density = 1,
 ): Cell | null {
-  // A fading cell drops out for good once density falls below its own threshold.
-  if (density < 1 && hash(x, row, 12) >= density) return null
   const trail = rain(x, d, t)
   const isHead = trail > 0.93
   const nearWave = Math.abs(d - wave) < 1.5

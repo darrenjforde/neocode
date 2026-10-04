@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.2 (2026-10-04)
+
+- **More rain over a streaming reply, sooner.** In 0.3.1 streamed lines took rain on the finished-row curve at their true height. A reply's lines sit low on the screen, below where your Reach starts decaying, so they had almost no rain until the reply was tall. By then the fade-out, which began at 70% of the window's height, was already thinning it. With `gentle` there was none at all. Streamed lines now decay as if twice as far up. The fade-out now covers only the last third of the window, measured from the space actually left above the reply rather than an estimate of its height. It's also projected each frame from how fast the reply is growing, instead of jumping at each redraw. In tests with a 31-line window, a reply half the window tall had rain on 6, 10 and 13 lines (gentle, balanced, deep), up from 0, 0 and 0.
+- **Fixed: rain filling the whole window after a stopped reply.** When a reply was stopped mid-stream, neocode kept counting its streamed lines as if they were still below the newest row, so every row decayed fully. Two causes:
+  - A stopped reply sends no final streaming update.
+  - Esc while Claude was thinking takes the prompt row back. That row never draws again but stayed "newest", so the reply that followed didn't end the stream either.
+
+  The stream state is now cleared by its reply's row arriving, a newer prompt row, a `turn.complete` event (any reason), `/clear`, and as a backstop 10 s without a streaming update. Rows that stop being drawn no longer count as the newest. Tested in tmux with Esc while thinking, Esc and Ctrl+C mid-stream, a denied permission prompt after text, and `/clear` mid-stream. New tests check that after an interrupted stream the rain profile matches the live-bottom profile for each Reach; they fail against 0.3.1.
+
 ## 0.3.1 (2026-10-04)
 
 - **Fixed: weaker rain after a scroll.** Once the rain returned after a scroll, it used a separate, gentler curve and measured distance differently, so it covered less than at the live bottom with the same content. Three things differed:

@@ -352,15 +352,16 @@ describe('selection (0.2.1 fixes)', () => {
 
 describe('streaming reply fade (0.3.0)', () => {
   test('the rain over a stream thins out smoothly before the row carrying it leaves', () => {
-    let last = 1
-    for (let rows = 0; rows <= 30; rows++) {
-      const f = streamFade(rows, 30)
-      expect(f).toBeLessThanOrEqual(last) // never thickens as the reply grows
-      expect(last - f).toBeLessThan(0.35) // no cliff: under a third gone per line
+    // `remaining`: lines the anchor row and those above it still have on screen.
+    let last = 0
+    for (let remaining = 0; remaining <= 30; remaining++) {
+      const f = streamFade(remaining, 30)
+      expect(f).toBeGreaterThanOrEqual(last) // never thickens as the anchor nears the top
+      expect(f - last).toBeLessThan(0.35) // no cliff: under a third per line
       last = f
     }
-    expect(streamFade(18, 30)).toBe(1) // a short reply keeps it all
-    expect(streamFade(28, 30)).toBe(0) // gone before the reply fills the window
+    expect(streamFade(10, 30)).toBe(1) // plenty of room: all of it
+    expect(streamFade(1, 30)).toBe(0) // gone a line before the anchor leaves
   })
 
   // Glyphs the rasters draw on each line of the row's drawing.
@@ -396,22 +397,45 @@ describe('streaming reply fade (0.3.0)', () => {
       viewport: VIEWPORT,
     })
     const window = 24 // VIEWPORT's 30 rows less the prompt and footer
-    const streamGlyphs = async (lines: number, index: number) => {
+    // `onScreen`: the prompt row above the reply, pushed up as the reply grows.
+    const streamGlyphs = async (lines: number, index: number, onScreen: { first: number; last: number; of: number }) => {
       const delta = Array.from({ length: lines }, (_, i) => `x${i}`).join('\n') + '\n'
       await $.classic.MessageDisplay({ turn_id: 't', message_id: `m${index}`, index: 0, final: false, delta })
-      await prompt.redraw()
+      await prompt.redraw({ ...props, onScreen })
       let n = 0
       for (const [line, count] of glyphsPerLine(await prompt.drawn())) if (line >= 2) n += count
       return n
     }
-    const full = await streamGlyphs(Math.round(window * 0.66), 0)
-    const thin = await streamGlyphs(Math.round(window * 0.8), 1)
-    const gone = await streamGlyphs(Math.round(window * 0.95), 2)
+    const full = await streamGlyphs(Math.round(window * 0.6), 0, { first: 0, last: 1, of: 2 })
+    const thin = await streamGlyphs(Math.round(window * 0.85), 1, { first: 0, last: 1, of: 2 })
+    // The prompt row has one line left on screen: the next lines push it off.
+    const gone = await streamGlyphs(window - 1, 2, { first: 1, last: 1, of: 2 })
     expect(full).toBeGreaterThan(0)
     expect(thin).toBeGreaterThan(0) // thinned, not cut off
-    expect(thin).toBeLessThan(full * (0.8 / 0.66)) // fewer than the taller reply alone would give
+    expect(thin).toBeLessThan(full * (0.85 / 0.6)) // fewer than the taller reply alone would give
     expect(gone).toBe(0)
   })
+
+  for (const reach of ['gentle', 'balanced', 'deep'] as const) {
+    test(`${reach}: a reply half the window tall already has rain around most of its older lines`, { options: { reach } }, async ($, on) => {
+      on('ui.render', () => ENGINE)
+      on('classic.MessageDisplay', () => ({}))
+      const prompt = await $.ui.mount({
+        plugin: 'neocode', surface: 'terminal', component: 'UserMessage',
+        props: { text: 'Write it', origin: { kind: 'composer' }, isExpanded: false, onScreen: { first: 0, last: 1, of: 2 } },
+        viewport: VIEWPORT,
+      })
+      const lines = 12 // half of the 24-line window
+      const delta = Array.from({ length: lines }, (_, i) => `x${i}`).join('\n') + '\n'
+      await $.classic.MessageDisplay({ turn_id: 't', message_id: 'half', index: 0, final: false, delta })
+      await prompt.redraw()
+      // The layer over the streamed lines: which of them it spans.
+      const layer = JSON.stringify(await prompt.drawn()).match(/"top":(\d+)[^}]*\}[^R]*Raster","props":\{"key":"ustream","columns":\d+,"rows":(\d+)/)
+      const spanned = layer ? Number(layer[2]) : 0
+      const expected = { gentle: 4, balanced: 7, deep: 9 }[reach] // of its 13 lines (a blank, then 12)
+      expect(spanned).toBeGreaterThanOrEqual(expected)
+    })
+  }
 
   // A reply streams under the prompt row (`index` keeps message ids apart),
   // then completes as a row of its own; returns that row's drawing.
@@ -571,5 +595,91 @@ describe('parity: rain after a scroll matches the live bottom (0.3.1)', () => {
       }
     })
   }
+})
+
+describe('a stream that stops without finishing (0.3.2)', () => {
+  const LINE = 'a'.repeat(78)
+  const UNIFORM = { text: '```\n' + Array.from({ length: 95 }, () => LINE).join('\n') + '\n```', isFirstOfReply: true }
+  const AT_BOTTOM = { first: 72, last: 95, of: 96 }
+  const cellsPerLine = (tree: unknown) => {
+    const out = new Map<number, number>()
+    const walk = (node: any, top: number) => {
+      if (!node || typeof node !== 'object') return
+      if (node.type === 'Raster') {
+        const bytes = (Uint8Array as any).fromBase64(node.props.cells) as Uint8Array
+        const words = new Uint32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4)
+        for (let i = 0; i < node.props.rows; i++) {
+          let n = 0
+          for (let j = 0; j < node.props.columns; j++) if (words[(i * node.props.columns + j) * 3] !== 0x20) n++
+          out.set(top + i, (out.get(top + i) ?? 0) + n)
+        }
+      }
+      const childTop = node.props?.position === 'absolute' ? Number(node.props.top ?? 0) : top
+      for (const child of node.children ?? []) walk(child, childTop)
+    }
+    walk(tree, 0)
+    return out
+  }
+  // Lines of the window with any rain, and the fully rained ones: the profile.
+  const profile = (tree: unknown) => {
+    const lines = cellsPerLine(tree)
+    const rained = [...lines].filter(([, n]) => n > 0).map(([l]) => l).sort((a, b) => a - b)
+    const full = [...lines].filter(([, n]) => n >= 78).map(([l]) => l).sort((a, b) => a - b)
+    return { lowestRained: rained[rained.length - 1] ?? -1, lowestFull: full[full.length - 1] ?? -1 }
+  }
+
+  for (const reach of ['gentle', 'balanced', 'deep'] as const) {
+    test(`${reach}: once an interrupted turn ends, the rain is the live-bottom profile again`, { options: { reach } }, async ($, on) => {
+      on('ui.render', () => ENGINE)
+      on('classic.MessageDisplay', () => ({}))
+      on('turn.complete', () => ({ text: '' }))
+      const reply = await $.ui.mount({
+        plugin: 'neocode', surface: 'terminal', component: 'AssistantMessage', requestId: 'r',
+        props: { ...UNIFORM, onScreen: AT_BOTTOM }, viewport: VIEWPORT,
+      })
+      const live = profile(await reply.drawn())
+      // A new reply starts streaming, then the turn is cut off (Esc, Ctrl+C, an
+      // error): no final flush, and no row of its own ever arrives.
+      const delta = Array.from({ length: 20 }, (_, i) => `x${i}`).join('\n') + '\n'
+      await $.classic.MessageDisplay({ turn_id: 't', message_id: 'cut', index: 0, final: false, delta })
+      await $.turn.complete({ turnId: 't', reason: 'aborted', isAborted: true, answer: '', durationMs: 1000 } as never)
+      await reply.redraw()
+      expect(profile(await reply.drawn())).toEqual(live)
+    })
+  }
+
+  test('a row that vanishes (a prompt Esc took back) stops counting as the newest row', { timeoutMs: 8000 }, async ($, on) => {
+    on('ui.render', () => ENGINE)
+    const clock = mockSession(on)
+    on('ui.selection', () => ({ value: undefined }))
+    on('ui.blit', () => ({ value: {} }))
+    on('classic.MessageDisplay', () => ({}))
+    await startSession($)
+    const reply = await $.ui.mount({
+      plugin: 'neocode', surface: 'terminal', component: 'AssistantMessage', requestId: 'r',
+      props: { ...UNIFORM, onScreen: { first: 74, last: 95, of: 96 } }, viewport: VIEWPORT,
+    })
+    const live = profile(await reply.drawn())
+    // A prompt is sent and drawn below the reply, then taken back: it is never drawn again.
+    await $.ui.mount({
+      plugin: 'neocode', surface: 'terminal', component: 'UserMessage', requestId: 'withdrawn',
+      props: { text: 'never mind', origin: { kind: 'composer' }, isExpanded: false, onScreen: { first: 0, last: 1, of: 2 } },
+      viewport: VIEWPORT,
+    })
+    // Redraw passes go by without it (the frame timer runs them).
+    for (let i = 0; i < 12; i++) {
+      await wait(100)
+      await clock.advance(100)
+      await reply.redraw()
+    }
+    // A stream now (the next prompt's reply) would hang below the newest row;
+    // the vanished prompt must not be taken for it.
+    const delta = Array.from({ length: 20 }, (_, i) => `x${i}`).join('\n') + '\n'
+    await $.classic.MessageDisplay({ turn_id: 't2', message_id: 'next', index: 0, final: false, delta })
+    await reply.redraw()
+    // The reply is the newest row still drawn, so the stream's rain hangs from it.
+    expect(JSON.stringify(await reply.drawn())).toContain('"key":"ustream"')
+    void live
+  })
 })
 

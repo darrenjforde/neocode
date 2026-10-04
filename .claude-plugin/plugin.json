@@ -1,7 +1,7 @@
 {
   "name": "neocode",
   "displayName": "neocode",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Matrix-style ambience for Claude Code: code decays into upward-streaming digital rain as it scrolls toward the top of the screen. Display-only: scrolling or selecting clears it until you pause; /neocode toggles it.",
   "author": {
     "name": "Darren Forde",

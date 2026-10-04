@@ -46,8 +46,10 @@ import {
   longestText,
   markdownExtents,
   paint,
+  paintGap,
   plainExtents,
   seedOf,
+  streamCorruption,
   streamFade,
   waveAt,
 } from './matrix'
@@ -99,9 +101,18 @@ type OnScreen = { first: number; last: number; of: number }
  * `onScreen`; `changedAt` when it appeared or last changed height;
  * `arrivedAt` when it arrived as a reply that had just finished streaming (0
  * for any other row) and `rampFrom` the fade its stream had reached then: its
- * rain ramps from that back to full (see RAMP_MS).
+ * rain ramps from that back to full (see RAMP_MS). `seenAt` when it was last
+ * drawn; `isGone` once a full redraw passed it by (see `sweepGone`).
  */
-type Entry = { of: number; shown: OnScreen | null; changedAt: number; arrivedAt: number; rampFrom: number }
+type Entry = {
+  of: number
+  shown: OnScreen | null
+  changedAt: number
+  arrivedAt: number
+  rampFrom: number
+  seenAt: number
+  isGone: boolean
+}
 
 /** One raster laid over a row: `rows` x `width` cells at (`row`, `col`) of the row's drawing. */
 type Overlay = {
@@ -111,6 +122,8 @@ type Overlay = {
   width: number
   rows: number
   isBlock: boolean
+  /** Laid over a streaming reply's lines: trails in the gaps (paintGap). */
+  isStream?: boolean
 }
 
 /**
@@ -123,9 +136,17 @@ type Mount = {
   base: number
   /** How far its decay has ramped in, 0 to 1 (see RAMP_MS). */
   ramp: number
-  /** Lines from here on are a streaming reply's, kept at `fade` density (see streamFade). */
-  fadeFrom: number
+  /** How much of the rain over a streaming reply below this row to keep (see streamFade). */
   fade: number
+  /**
+   * For that fade between redraws: the lines left above the reply when drawn
+   * (`remaining`), when (`drawnAt`), and how fast the reply was growing then
+   * (`rate`, lines a second). A fast reply grows several lines between
+   * redraws; projecting it lets the rain thin out frame by frame.
+   */
+  remaining: number
+  drawnAt: number
+  rate: number
   viewRows: number
   extents: Extent[]
   overlays: Overlay[]
@@ -142,14 +163,29 @@ let layoutDirtyAt = 0
 let settings = { reach: 'balanced' as Reach, glyphs: 'katakana' as GlyphSet, resumeMs: 5000 }
 
 /**
- * The reply streaming now, as its display lines have arrived so far, and the
- * fade its rain is at (see streamFade). Its last flush sets `finishedAt`: from
- * then it adds no lines below the newest row (the finished reply's own row is
- * about to report, and takes it over), and it is dropped if that row never
- * comes. `finished` names the last stream so a late flush for it is ignored.
+ * The reply streaming now, as its display lines have arrived so far, the fade
+ * its rain is at (see streamFade) and when its last flush came. Its final
+ * flush, or the turn ending, sets `finishedAt`: from then it adds no lines
+ * below the newest row, and the finished reply's own row takes it over if it
+ * comes. `finished` names the last stream, so a late flush for it is ignored.
+ *
+ * A stream left behind would push every row on screen into the rain, so it
+ * ends on every way a reply can stop (see `endStream`): its row arriving, a
+ * new prompt, the turn ending (an interrupt or an error included), /clear,
+ * and, as a backstop, no flush for STREAM_STALE_MS.
  */
-let stream: { id: string; text: string; fade: number; finishedAt?: number } | undefined
+let stream:
+  | { id: string; text: string; fade: number; rate: number; flushedAt: number; finishedAt?: number }
+  | undefined
 let finished = ''
+const STREAM_STALE_MS = 10_000
+
+function endStream(now: number) {
+  if (!stream) return
+  finished = stream.id
+  stream = undefined
+  layoutDirtyAt ||= now
+}
 let rampUntil = 0 // redraw until then, so a finishing reply's rain ramps in
 
 const isBottomClipped = (s: OnScreen | null | undefined) => !!s && s.last < s.of - 1
@@ -187,25 +223,29 @@ function measure(key: string, shown: OnScreen | null): Entry {
   const now = Date.now()
   let entry = entries.get(key)
   if (!entry) {
-    entry = { of: shown?.of ?? 0, shown, changedAt: now, arrivedAt: 0, rampFrom: 1 }
+    entry = { of: shown?.of ?? 0, shown, changedAt: now, arrivedAt: 0, rampFrom: 1, seenAt: now, isGone: false }
     entries.set(key, entry)
     place(entry, now)
     layoutDirtyAt ||= now // a full pass soon, to settle where it goes
-    if (entry === newest() && !isScrolling()) {
-      lastGrowthAt = now
-      // The finished reply has its own row now: stop raining on its stream,
-      // and ramp its own rain in from where the stream's fade left off.
-      if (key.startsWith('AssistantMessage:') && stream) {
+    if (entry === newest() && !isScrolling()) lastGrowthAt = now
+    if (stream && !isScrolling()) {
+      if (key.startsWith('AssistantMessage:')) {
+        // The reply has its own row now (finished, or cut short): stop raining
+        // on its stream, and ramp its own rain in from where the fade left off.
         if (stream.fade < 1) {
           entry.arrivedAt = now
           entry.rampFrom = stream.fade
           rampUntil = now + RAMP_MS
         }
-        stream = undefined
+        endStream(now)
+      } else if (key.startsWith('UserMessage:') && entry === newest()) {
+        endStream(now) // a new prompt: whatever was streaming is over
       }
     }
     return entry
   }
+  entry.seenAt = now
+  entry.isGone = false
   place(entry, now)
   const prev = entry.shown
   // A row first reported off screen has no height yet (0); learning it is not growth.
@@ -226,7 +266,28 @@ function measure(key: string, shown: OnScreen | null): Entry {
   return entry
 }
 
-const newest = () => order[order.length - 1]
+/** The last row of the transcript that is still drawn. */
+function newest(): Entry | undefined {
+  for (let i = order.length - 1; i >= 0; i--) if (!order[i]!.isGone) return order[i]
+  return undefined
+}
+
+/**
+ * Marks the rows a full redraw passed by as gone. Every row on the screen (and
+ * the few just off it the engine keeps drawn) redraws when `layout` changes;
+ * a row that does not has left: scrolled far away, or removed, like a prompt
+ * Esc took back before Claude answered. A gone row's last report is stale, so
+ * it must not stand as the newest row or as part of what is on screen. It
+ * comes back the next time it is drawn.
+ */
+let passAt = 0
+const PASS_SETTLE_MS = 600
+
+function sweepGone(now: number) {
+  if (!passAt || now - passAt < PASS_SETTLE_MS) return
+  for (const entry of order) if (entry.seenAt < passAt) entry.isGone = true
+  passAt = 0
+}
 
 /**
  * Learns the transcript's order. The engine draws rows in passes, top to
@@ -262,7 +323,7 @@ function place(entry: Entry, now: number) {
  * test, so it cannot pull the window off.
  */
 function visibleRun(seed: Entry): Entry[] {
-  const all = order
+  const all = order.filter(e => !e.isGone || e === seed)
   let top = all.indexOf(seed)
   let bottom = top
   while (top > 0) {
@@ -324,13 +385,29 @@ function baseOf(entry: Entry, shown: OnScreen, streamRows: number): number {
 }
 
 /**
- * The rasters a row needs: one block over its fully decayed lines, small bites
- * over the rest. Lines from `bitesEnd` on get no bites: they belong to the
- * streaming reply, whose text the engine paints over anything laid there, so
- * only the block's rain in the space around its lines would ever show.
+ * How many lines the row above a streaming reply (`anchor`) and the rows above
+ * it still have on screen, before the reply pushes the anchor off the top.
+ * Once the top row on screen is cut off by the window's top, that is exactly
+ * the lines of the rows on screen. Before then, rows the engine does not
+ * report (the welcome banner) may sit above them too: at least those lines,
+ * and as many as the window's height less the reply's.
  */
-function overlaysFor(m: Mount, first: number, last: number, columns: number, prefix: string, bitesEnd: number): Overlay[] {
-  const out: Overlay[] = []
+function linesAboveStream(anchor: Entry, viewRows: number, streamRows: number): number {
+  const run = visibleRun(anchor)
+  let lines = 0
+  for (const e of run) if (e.shown) lines += e.shown.last - e.shown.first + 1
+  const isTopCut = (run[0]!.shown?.first ?? 0) > 0
+  return isTopCut ? lines : Math.max(lines, viewRows - streamRows)
+}
+
+/**
+ * The rasters a row needs: one block over its fully decayed lines, small bites
+ * over the rest. Lines from `streamFrom` to `last` belong to the reply
+ * streaming below the row; they get one layer of their own (see streamLayer).
+ */
+function overlaysFor(m: Mount, first: number, last: number, columns: number, prefix: string, streamFrom: number): Overlay[] {
+  const out: Overlay[] = streamLayer(m, streamFrom, last, columns, prefix)
+  last = Math.min(last, streamFrom - 1)
   let blockEnd = first
   for (let r = first; r <= last; r++) {
     const c = corruption(m.base - r, m.viewRows, settings.reach) * m.ramp
@@ -339,7 +416,6 @@ function overlaysFor(m: Mount, first: number, last: number, columns: number, pre
       blockEnd = r + 1
       continue
     }
-    if (r >= bitesEnd) break
     const extent = m.extents[r] ?? [0, 0]
     for (const [start, end] of bites(extent, c, hash(m.seed, r))) {
       out.push({ key: `${prefix}${r}_${start}`, row: r, col: start, width: end - start, rows: 1, isBlock: false })
@@ -358,6 +434,28 @@ function overlaysFor(m: Mount, first: number, last: number, columns: number, pre
   return out
 }
 
+/**
+ * The layer over a streaming reply's lines, `from` to `to`: one raster across
+ * the window from its oldest line down to the last line rain reaches. The
+ * engine paints the streamed text over it, so only the gaps around the text
+ * show it; the trails there thicken with a line's distance above the newest
+ * one (streamCorruption).
+ */
+function streamLayer(m: Mount, from: number, to: number, columns: number, prefix: string): Overlay[] {
+  if (from > to || m.fade <= 0) return []
+  let end = from
+  while (end <= to && streamCorruption(m.base - end, m.viewRows, settings.reach) > 0) end++
+  if (end === from) return []
+  const rows = Math.min(256, end - from)
+  return [{ key: `${prefix}stream`, row: from, col: 0, width: Math.min(512, columns), rows, isBlock: true, isStream: true }]
+}
+
+/** The fade over a streaming reply at time `t` (seconds): projected on from the last redraw, never thicker. */
+function streamFadeNow(m: Mount, t: number): number {
+  const lines = m.remaining - (m.rate * Math.max(0, t * 1000 - m.drawnAt)) / 1000
+  return Math.min(m.fade, streamFade(lines, m.viewRows))
+}
+
 /** Packs one overlay's cells at time `t` as RasterProps.cells wants them. */
 function cellsOf(m: Mount, o: Overlay, t: number): string {
   const words = new Uint32Array(o.width * o.rows * 3)
@@ -365,13 +463,16 @@ function cellsOf(m: Mount, o: Overlay, t: number): string {
   for (let i = 0; i < o.rows; i++) {
     const r = o.row + i
     const d = m.base - r
-    const c = corruption(d, m.viewRows, settings.reach) * m.ramp
-    const [start, end] = m.extents[r] ?? [0, 0]
     const rowId = hash(m.seed, r) * 1e6
+    const c = o.isStream
+      ? streamCorruption(d, m.viewRows, settings.reach) * streamFadeNow(m, t)
+      : corruption(d, m.viewRows, settings.reach) * m.ramp
+    const [start, end] = m.extents[r] ?? [0, 0]
     for (let j = 0; j < o.width; j++) {
       const x = o.col + j
-      const density = r >= m.fadeFrom ? m.fade : 1
-      const cell = paint(x, rowId, d, c, x >= start && x < end, t, wave, settings.glyphs, density)
+      const cell = o.isStream
+        ? paintGap(x, rowId, d, c, t, wave, settings.glyphs)
+        : paint(x, rowId, d, c, x >= start && x < end, t, wave, settings.glyphs)
       const at = (i * o.width + j) * 3
       words[at] = cell ? cell.glyph : 0x20
       words[at + 1] = cell ? cell.color : 0x01000000
@@ -422,15 +523,18 @@ const draw: Draw = async ($, e, next) => {
   // The streaming reply sits below the newest row; that row carries its rain.
   const streamExtents = stream && !stream.finishedAt ? markdownExtents(stream.text, columns) : []
   const base = baseOf(entry, shown, streamExtents.length)
-  const fade = streamFade(streamExtents.length, viewRows)
-  if (stream && !stream.finishedAt) stream.fade = fade
-  const isAnchor = entry === newest() && streamExtents.length > 0 && shown.last === shown.of - 1 && fade > 0
+  const isAnchor = entry === newest() && streamExtents.length > 0 && shown.last === shown.of - 1
+  const remaining = isAnchor ? linesAboveStream(entry, viewRows, streamExtents.length) : viewRows
+  const fade = isAnchor ? Math.min(stream?.fade ?? 1, streamFade(remaining, viewRows)) : 1
+  if (isAnchor && stream) stream.fade = fade
   const mount: Mount = {
     requestId: e.requestId,
     seed: seedOf(key),
     base,
-    fadeFrom: shown.of,
     fade,
+    remaining,
+    drawnAt: Date.now(),
+    rate: isAnchor && stream ? stream.rate : 0,
     viewRows,
     ramp: entry.arrivedAt
       ? entry.rampFrom + (1 - entry.rampFrom) * Math.min(1, (Date.now() - entry.arrivedAt) / RAMP_MS)
@@ -482,16 +586,18 @@ function frame($: EngineInterface) {
   const now = Date.now()
   const t = now / 1000
 
-  // A finished stream whose row never came (an interrupted reply) is dropped.
-  if (stream?.finishedAt && now - stream.finishedAt > 2000) {
-    stream = undefined
-    layoutDirtyAt ||= now
+  // A finished stream whose row never came is dropped, and so is one gone quiet.
+  if (stream && (now - (stream.finishedAt ?? Infinity) > 2000 || now - stream.flushedAt > STREAM_STALE_MS)) {
+    endStream(now)
   }
-  // A reply ramping its rain in redraws as it goes, so the rain covers more each time.
-  if (now < rampUntil + 150) layoutDirtyAt ||= now
+  sweepGone(now)
+  // Rain ramping in after a reply, or fading out over one still streaming,
+  // redraws as it goes, so each step shows.
+  if (now < rampUntil + 150 || (stream && !stream.finishedAt && stream.fade < 1)) layoutDirtyAt ||= now
   // Geometry changed (a row arrived or grew, the stream got longer): redraw once it settles.
   if (layoutDirtyAt && now - layoutDirtyAt > 120) {
     layoutDirtyAt = 0
+    passAt ||= now // every row on screen redraws now; sweepGone looks at who did not
     void update($, layout, n => (n ?? 0) + 1)
   }
   // A move that might have been a scroll is one, unless output arrived around then.
@@ -618,6 +724,7 @@ export const register: Register = (on, options) => {
   on('session.end', ($, e, next) => {
     entries.clear()
     order.length = 0
+    passAt = 0
     lastDraw = undefined
     mounts.clear()
     lastScrollAt = 0
@@ -632,15 +739,31 @@ export const register: Register = (on, options) => {
   // While a reply streams, its lines are drawn where no render hook reaches.
   // Read them to size the rain laid over them; pass the event on untouched.
   on('classic.MessageDisplay', ($, e, next) => {
+    const now = Date.now()
     if (e.message_id === finished) return next(e) // a late flush for a reply already done
-    if (stream?.id !== e.message_id) stream = { id: e.message_id, text: '', fade: 1 }
+    if (stream?.id !== e.message_id) {
+      if (e.final) return next(e) // a last flush for a reply whose row already took over
+      stream = { id: e.message_id, text: '', fade: 1, rate: 0, flushedAt: now }
+    }
+    // How fast it grows, in lines a second, smoothed over the last few flushes.
+    const lines = e.delta.split('\n').length - 1
+    if (now > stream.flushedAt) stream.rate = 0.6 * stream.rate + 0.4 * ((lines * 1000) / (now - stream.flushedAt))
     stream.text += e.delta
+    stream.flushedAt = now
     if (e.final) {
-      stream.finishedAt = Date.now()
+      stream.finishedAt = now
       finished = e.message_id
     }
-    lastGrowthAt = Date.now()
-    layoutDirtyAt ||= lastGrowthAt
+    lastGrowthAt = now
+    layoutDirtyAt ||= now
+    return next(e)
+  })
+
+  // A turn ending (answered, interrupted, or cut off by an error) ends its
+  // stream: the reply's row, if one comes, still takes it over. A subagent's
+  // turn is not the main conversation's. The event goes on untouched.
+  on('turn.complete', ($, e, next) => {
+    if (!e.agentId && stream && !stream.finishedAt) stream.finishedAt = Date.now()
     return next(e)
   })
 

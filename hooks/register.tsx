@@ -46,7 +46,8 @@
 //     output, command output), to estimate where each line's text sits. Only
 //     those line extents, numbers, are kept.
 //   - The streamed reply's lines, kept until its row arrives or its turn ends.
-//   - The person's current mouse selection (`$.ui.selection()`, asked about
+//   - The person's current mouse selection (`$.ui.selection()`, Claude Code's
+//     own call, which only returns the selection and sends nothing; asked about
 //     every frame): its text and the transcript row it lies in. The text is
 //     held to compare what was selected over rain with what it reads once the
 //     rain is gone; it is dropped when the engine stops reporting that selection,

@@ -1,6 +1,6 @@
 # neocode privacy policy
 
-Last updated: 4 October 2026 (version 0.3.5)
+Last updated: 13 October 2026 (version 0.3.6)
 
 **neocode sends nothing anywhere and collects nothing.** It runs entirely inside your Claude Code session, on your machine.
 
@@ -10,7 +10,7 @@ To draw the rain, neocode looks at these things while Claude Code is running. It
 
 - **The text on screen:** the rows it draws over (replies, your prompts, tool input and output). It uses them to work out where each line of text sits.
 - **A reply as it streams in**, to work out how tall it is so far.
-- **Your mouse selection:** its text and which row it is in. neocode compares what you selected with what's on screen once the rain has cleared, so it can tell whether a copy caught decorative characters.
+- **Your mouse selection:** its text and which row it is in, through Claude Code's own built-in selection call, which only returns the selection and sends nothing. neocode compares what you selected with what's on screen once the rain has cleared, so it can tell whether a copy caught decorative characters.
 - **One setting,** whether you've asked Claude Code to reduce motion. Claude Code's settings call returns all of your settings; neocode looks only at that one.
 - **When a turn ends, whether it was a subagent's.** It reads no conversation text from that event.
 - **Whether the terminal is in fullscreen mode, and its size.**

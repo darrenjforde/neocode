@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.6 (2026-10-13)
+
+No change in behaviour. After 0.3.5 went live, the directory flagged it with "Mod can read local data and can also send data out" and "Mod can read the conversation and can also send data out". Both findings point at the `$.ui.selection` call, which the directory doesn't recognise, so it couldn't rule that call out as a way for data to leave.
+
+- README, "What it sends and where": now names `$.ui.selection` directly. It's Claude Code's own call, it only returns the current mouse selection and sends nothing, and the text stays in memory for one comparison. The section also says what the `classic.MessageDisplay` hook does: it reads a streaming reply's lines, and changes nothing.
+- `PRIVACY.md` and the header comment in `hooks/register.tsx` say the same.
+
 ## 0.3.5 (2026-10-04)
 
 Fixes for the directory portal's validation findings. One behaviour change: how **Reach** and **Glyphs** read what you type.

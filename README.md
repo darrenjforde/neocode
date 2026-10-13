@@ -126,8 +126,10 @@ Mods run unsandboxed with your permissions, so here is everything neocode does.
 
 **neocode sends nothing off your machine.** It makes no network requests, and nothing it reads goes to Claude, to a file, or to another program.
 
-- **One call passes data on:** `$.ui.copy`, which writes to your local clipboard. neocode reads your current mouse selection (`$.ui.selection`) to watch for one case. A selection made faster than one animation frame, such as a double-click on a word, can be copied while rain glyphs are still on screen. When that happens, neocode re-copies your own selection, as it really reads, so the clipboard ends up holding the real text. It never copies anything else.
+- **`$.ui.selection`** is Claude Code's own built-in call, not another plugin's. It sends nothing: it only returns the text you currently have selected with the mouse, and which transcript row it's in. neocode calls it once per animation frame. It holds the text in memory, never stores, logs or sends it, and uses it for one thing: comparing what you selected over rain with what it reads once the rain is gone (see the next point).
+- **`$.ui.copy`** is the only call that passes anything on, and only to your local clipboard. A selection made faster than one animation frame, such as a double-click on a word, can be copied while rain glyphs are still on screen. When that happens, neocode re-copies your own selection, as it really reads, so the clipboard ends up holding the real text. It never copies anything else.
 - **`turn.complete`** reads only whether the turn belongs to a subagent. It reads no conversation text, and passes the event on untouched.
+- **`classic.MessageDisplay`** reads a streaming reply's lines to size the rain around them. It changes nothing: the event, and Claude Code's answer to it, pass on exactly as received.
 - **`$.settings.read`** is used only to read `prefersReducedMotion`, so neocode can start off for anyone who has asked Claude Code to reduce motion.
 - **The `command.run` hook runs only for `/neocode`.** It answers it with a toast, and never reads or changes any other command or any permission decision.
 - Everything else it writes stays inside Claude Code's own display and storage: the rain it draws, two toasts, and two on/off flags.
